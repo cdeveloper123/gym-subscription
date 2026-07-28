@@ -1,19 +1,16 @@
 const request = require('supertest');
+const mongoose = require('mongoose');
 const app = require('../index');
-const { PrismaClient } = require('@prisma/client');
-const bcrypt = require('bcryptjs');
-
-const prisma = new PrismaClient();
+const User = require('../models/User');
 
 describe('Authentication', () => {
   beforeAll(async () => {
-    await prisma.user.deleteMany({
-      where: { email: { startsWith: 'test' } }
-    });
+    await mongoose.connect(process.env.DATABASE_URL);
+    await User.deleteMany({ email: /^test/ });
   });
 
   afterAll(async () => {
-    await prisma.$disconnect();
+    await mongoose.disconnect();
   });
 
   describe('POST /api/auth/register', () => {

@@ -1,22 +1,16 @@
-const prisma = require('../lib/prisma');
+const User = require('../models/User');
+const Subscription = require('../models/Subscription');
+const Payment = require('../models/Payment');
 
 const getDashboardStats = async (req, res, next) => {
   try {
-    const totalUsers = await prisma.user.count({
-      where: { role: 'USER' }
-    });
+    const totalUsers = await User.countDocuments({ role: 'USER' });
 
-    const activeSubscriptions = await prisma.subscription.count({
-      where: { status: 'ACTIVE' }
-    });
+    const activeSubscriptions = await Subscription.countDocuments({ status: 'ACTIVE' });
 
-    const expiredSubscriptions = await prisma.subscription.count({
-      where: { status: 'EXPIRED' }
-    });
+    const expiredSubscriptions = await Subscription.countDocuments({ status: 'EXPIRED' });
 
-    const completedPayments = await prisma.payment.findMany({
-      where: { status: 'COMPLETED' }
-    });
+    const completedPayments = await Payment.find({ status: 'COMPLETED' }).lean();
 
     const totalRevenue = completedPayments.reduce((sum, payment) => sum + payment.amount, 0);
 
@@ -24,32 +18,39 @@ const getDashboardStats = async (req, res, next) => {
     currentMonth.setDate(1);
     currentMonth.setHours(0, 0, 0, 0);
 
-    const monthlyPayments = await prisma.payment.findMany({
-      where: {
-        status: 'COMPLETED',
-        createdAt: { gte: currentMonth }
-      }
-    });
+    const monthlyPayments = await Payment.find({
+      status: 'COMPLETED',
+      createdAt: { $gte: currentMonth }
+    }).lean();
 
     const monthlyRevenue = monthlyPayments.reduce((sum, payment) => sum + payment.amount, 0);
 
-    const recentPayments = await prisma.payment.findMany({
-      take: 10,
-      orderBy: { createdAt: 'desc' },
-      include: {
-        user: {
-          select: {
-            name: true,
-            email: true
-          }
-        },
-        subscription: {
-          include: {
-            plan: true
-          }
-        }
-      }
-    });
+    const recentPayments = await Payment.find()
+      .limit(10)
+      .sort({ createdAt: -1 })
+      .populate('userId', 'name email')
+      .populate({
+        path: 'subscriptionId',
+        populate: { path: 'planId' }
+      })
+      .lean();
+
+    const recentPaymentsResponse = recentPayments.map(payment => ({
+      ...payment,
+      id: payment._id,
+      user: payment.userId ? {
+        name: payment.userId.name,
+        email: payment.userId.email
+      } : null,
+      subscription: payment.subscriptionId ? {
+        ...payment.subscriptionId,
+        id: payment.subscriptionId._id,
+        plan: payment.subscriptionId.planId ? {
+          ...payment.subscriptionId.planId,
+          id: payment.subscriptionId.planId._id
+        } : null
+      } : null
+    }));
 
     res.json({
       stats: {
@@ -59,7 +60,7 @@ const getDashboardStats = async (req, res, next) => {
         totalRevenue,
         monthlyRevenue
       },
-      recentPayments
+      recentPayments: recentPaymentsResponse
     });
   } catch (error) {
     next(error);
@@ -72,41 +73,52 @@ const getAllUsers = async (req, res, next) => {
 
     const skip = (parseInt(page) - 1) * parseInt(limit);
 
-    const where = search
+    const filter = search
       ? {
-          OR: [
-            { name: { contains: search, mode: 'insensitive' } },
-            { email: { contains: search, mode: 'insensitive' } }
+          $or: [
+            { name: { $regex: search, $options: 'i' } },
+            { email: { $regex: search, $options: 'i' } }
           ]
         }
       : {};
 
     const [users, total] = await Promise.all([
-      prisma.user.findMany({
-        where,
-        select: {
-          id: true,
-          email: true,
-          name: true,
-          phone: true,
-          address: true,
-          role: true,
-          createdAt: true,
-          subscriptions: {
-            where: { status: 'ACTIVE' },
-            include: { plan: true },
-            take: 1
-          }
-        },
-        skip,
-        take: parseInt(limit),
-        orderBy: { createdAt: 'desc' }
-      }),
-      prisma.user.count({ where })
+      User.find(filter)
+        .select('-password')
+        .skip(skip)
+        .limit(parseInt(limit))
+        .sort({ createdAt: -1 })
+        .lean(),
+      User.countDocuments(filter)
     ]);
 
+    const userIds = users.map(u => u._id);
+    const activeSubscriptions = await Subscription.find({
+      userId: { $in: userIds },
+      status: 'ACTIVE'
+    })
+      .populate('planId')
+      .lean();
+
+    const usersResponse = users.map(user => {
+      const userSubs = activeSubscriptions
+        .filter(sub => sub.userId.toString() === user._id.toString())
+        .slice(0, 1)
+        .map(sub => ({
+          ...sub,
+          id: sub._id,
+          plan: sub.planId ? { ...sub.planId, id: sub.planId._id } : null
+        }));
+
+      return {
+        ...user,
+        id: user._id,
+        subscriptions: userSubs
+      };
+    });
+
     res.json({
-      users,
+      users: usersResponse,
       pagination: {
         total,
         page: parseInt(page),
@@ -125,30 +137,37 @@ const getAllSubscriptions = async (req, res, next) => {
 
     const skip = (parseInt(page) - 1) * parseInt(limit);
 
-    const where = status ? { status } : {};
+    const filter = status ? { status } : {};
 
     const [subscriptions, total] = await Promise.all([
-      prisma.subscription.findMany({
-        where,
-        include: {
-          user: {
-            select: {
-              name: true,
-              email: true
-            }
-          },
-          plan: true,
-          payments: true
-        },
-        skip,
-        take: parseInt(limit),
-        orderBy: { createdAt: 'desc' }
-      }),
-      prisma.subscription.count({ where })
+      Subscription.find(filter)
+        .populate('userId', 'name email')
+        .populate('planId')
+        .skip(skip)
+        .limit(parseInt(limit))
+        .sort({ createdAt: -1 })
+        .lean(),
+      Subscription.countDocuments(filter)
     ]);
 
+    const subscriptionIds = subscriptions.map(s => s._id);
+    const payments = await Payment.find({ subscriptionId: { $in: subscriptionIds } }).lean();
+
+    const subscriptionsResponse = subscriptions.map(sub => ({
+      ...sub,
+      id: sub._id,
+      user: sub.userId ? {
+        name: sub.userId.name,
+        email: sub.userId.email
+      } : null,
+      plan: sub.planId ? { ...sub.planId, id: sub.planId._id } : null,
+      payments: payments
+        .filter(p => p.subscriptionId?.toString() === sub._id.toString())
+        .map(p => ({ ...p, id: p._id }))
+    }));
+
     res.json({
-      subscriptions,
+      subscriptions: subscriptionsResponse,
       pagination: {
         total,
         page: parseInt(page),
@@ -167,33 +186,41 @@ const getAllPayments = async (req, res, next) => {
 
     const skip = (parseInt(page) - 1) * parseInt(limit);
 
-    const where = status ? { status } : {};
+    const filter = status ? { status } : {};
 
     const [payments, total] = await Promise.all([
-      prisma.payment.findMany({
-        where,
-        include: {
-          user: {
-            select: {
-              name: true,
-              email: true
-            }
-          },
-          subscription: {
-            include: {
-              plan: true
-            }
-          }
-        },
-        skip,
-        take: parseInt(limit),
-        orderBy: { createdAt: 'desc' }
-      }),
-      prisma.payment.count({ where })
+      Payment.find(filter)
+        .populate('userId', 'name email')
+        .populate({
+          path: 'subscriptionId',
+          populate: { path: 'planId' }
+        })
+        .skip(skip)
+        .limit(parseInt(limit))
+        .sort({ createdAt: -1 })
+        .lean(),
+      Payment.countDocuments(filter)
     ]);
 
+    const paymentsResponse = payments.map(payment => ({
+      ...payment,
+      id: payment._id,
+      user: payment.userId ? {
+        name: payment.userId.name,
+        email: payment.userId.email
+      } : null,
+      subscription: payment.subscriptionId ? {
+        ...payment.subscriptionId,
+        id: payment.subscriptionId._id,
+        plan: payment.subscriptionId.planId ? {
+          ...payment.subscriptionId.planId,
+          id: payment.subscriptionId.planId._id
+        } : null
+      } : null
+    }));
+
     res.json({
-      payments,
+      payments: paymentsResponse,
       pagination: {
         total,
         page: parseInt(page),
