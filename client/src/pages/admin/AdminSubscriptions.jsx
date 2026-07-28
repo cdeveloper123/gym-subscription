@@ -1,37 +1,25 @@
-import { useState, useEffect } from 'react'
 import { adminService } from '../../services/api'
 import { toast } from 'react-toastify'
 import LoadingSpinner from '../../components/LoadingSpinner'
+import usePaginatedData from '../../hooks/usePaginatedData'
 
 const AdminSubscriptions = () => {
-  const [subscriptions, setSubscriptions] = useState([])
-  const [loading, setLoading] = useState(true)
-  const [filter, setFilter] = useState('')
-  const [pagination, setPagination] = useState({ page: 1, limit: 10, total: 0 })
-
-  useEffect(() => {
-    loadSubscriptions()
-  }, [pagination.page, filter])
-
-  const loadSubscriptions = async () => {
-    try {
-      const response = await adminService.getSubscriptions({
-        page: pagination.page,
-        limit: pagination.limit,
-        status: filter
-      })
-      setSubscriptions(response.subscriptions)
-      setPagination(response.pagination)
-    } catch (error) {
-      toast.error('Failed to load subscriptions')
-    } finally {
-      setLoading(false)
-    }
-  }
+  const {
+    data: subscriptions,
+    pagination,
+    loading,
+    filters: activeFilters,
+    setPage,
+    setFilter
+  } = usePaginatedData((params) => adminService.getSubscriptions(params), {
+    initialFilters: { status: '' },
+    getItems: (response) => response.subscriptions,
+    onError: () => toast.error('Failed to load subscriptions')
+  })
+  const filter = activeFilters.status
 
   const handleFilterChange = (status) => {
-    setFilter(status)
-    setPagination({ ...pagination, page: 1 })
+    setFilter('status', status)
   }
 
   const formatDate = (date) => {
@@ -152,7 +140,7 @@ const AdminSubscriptions = () => {
       {pagination.totalPages > 1 && (
         <div className="mt-8 flex items-center justify-center space-x-2">
           <button
-            onClick={() => setPagination({ ...pagination, page: pagination.page - 1 })}
+            onClick={() => setPage(pagination.page - 1)}
             disabled={pagination.page === 1}
             className="px-4 py-2 bg-white border border-gray-200 rounded-lg hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
           >
@@ -162,7 +150,7 @@ const AdminSubscriptions = () => {
             Page {pagination.page} of {pagination.totalPages}
           </span>
           <button
-            onClick={() => setPagination({ ...pagination, page: pagination.page + 1 })}
+            onClick={() => setPage(pagination.page + 1)}
             disabled={pagination.page === pagination.totalPages}
             className="px-4 py-2 bg-white border border-gray-200 rounded-lg hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
           >

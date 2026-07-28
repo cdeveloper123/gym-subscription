@@ -1,37 +1,25 @@
-import { useState, useEffect } from 'react'
 import { adminService } from '../../services/api'
 import { toast } from 'react-toastify'
 import LoadingSpinner from '../../components/LoadingSpinner'
+import usePaginatedData from '../../hooks/usePaginatedData'
 
 const AdminUsers = () => {
-  const [users, setUsers] = useState([])
-  const [loading, setLoading] = useState(true)
-  const [search, setSearch] = useState('')
-  const [pagination, setPagination] = useState({ page: 1, limit: 10, total: 0 })
-
-  useEffect(() => {
-    loadUsers()
-  }, [pagination.page, search])
-
-  const loadUsers = async () => {
-    try {
-      const response = await adminService.getUsers({
-        page: pagination.page,
-        limit: pagination.limit,
-        search
-      })
-      setUsers(response.users)
-      setPagination(response.pagination)
-    } catch (error) {
-      toast.error('Failed to load users')
-    } finally {
-      setLoading(false)
-    }
-  }
+  const {
+    data: users,
+    pagination,
+    loading,
+    filters,
+    setPage,
+    setFilter
+  } = usePaginatedData((params) => adminService.getUsers(params), {
+    initialFilters: { search: '' },
+    getItems: (response) => response.users,
+    onError: () => toast.error('Failed to load users')
+  })
+  const search = filters.search
 
   const handleSearch = (e) => {
-    setSearch(e.target.value)
-    setPagination({ ...pagination, page: 1 })
+    setFilter('search', e.target.value)
   }
 
   const formatDate = (date) => {
@@ -157,7 +145,7 @@ const AdminUsers = () => {
       {pagination.totalPages > 1 && (
         <div className="mt-8 flex items-center justify-center space-x-2">
           <button
-            onClick={() => setPagination({ ...pagination, page: pagination.page - 1 })}
+            onClick={() => setPage(pagination.page - 1)}
             disabled={pagination.page === 1}
             className="px-4 py-2 bg-white border border-gray-200 rounded-lg hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
           >
@@ -170,7 +158,7 @@ const AdminUsers = () => {
             {[...Array(pagination.totalPages)].slice(0, 5).map((_, i) => (
               <button
                 key={i}
-                onClick={() => setPagination({ ...pagination, page: i + 1 })}
+                onClick={() => setPage(i + 1)}
                 className={`w-10 h-10 rounded-lg font-medium transition-colors ${
                   pagination.page === i + 1
                     ? 'bg-blue-600 text-white'
@@ -183,7 +171,7 @@ const AdminUsers = () => {
           </div>
 
           <button
-            onClick={() => setPagination({ ...pagination, page: pagination.page + 1 })}
+            onClick={() => setPage(pagination.page + 1)}
             disabled={pagination.page === pagination.totalPages}
             className="px-4 py-2 bg-white border border-gray-200 rounded-lg hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
           >
