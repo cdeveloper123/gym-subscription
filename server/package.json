@@ -7,28 +7,25 @@
     "dev": "nodemon src/index.js",
     "start": "node src/index.js",
     "test": "jest --coverage",
-    "prisma:generate": "prisma generate",
-    "prisma:migrate": "prisma migrate dev",
-    "seed": "node src/prisma/seed.js"
+    "seed": "node src/db/seed.js"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "dependencies": {
-    "@prisma/client": "^5.7.1",
     "bcryptjs": "^2.4.3",
     "cors": "^2.8.5",
     "dotenv": "^16.3.1",
     "express": "^4.18.2",
     "express-validator": "^7.0.1",
     "jsonwebtoken": "^9.0.2",
+    "mongoose": "^8.0.3",
     "stripe": "^14.10.0",
     "morgan": "^1.10.0"
   },
   "devDependencies": {
     "jest": "^29.7.0",
     "nodemon": "^3.0.2",
-    "prisma": "^5.7.1",
     "supertest": "^6.3.3"
   }
 }

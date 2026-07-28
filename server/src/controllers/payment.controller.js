@@ -1,13 +1,13 @@
 const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
-const prisma = require('../lib/prisma');
+const SubscriptionPlan = require('../models/SubscriptionPlan');
+const Payment = require('../models/Payment');
+const Subscription = require('../models/Subscription');
 
 const createPaymentIntent = async (req, res, next) => {
   try {
     const { planId } = req.body;
 
-    const plan = await prisma.subscriptionPlan.findUnique({
-      where: { id: planId }
-    });
+    const plan = await SubscriptionPlan.findById(planId);
 
     if (!plan || !plan.isActive) {
       return res.status(404).json({ error: 'Plan not found or inactive' });
@@ -18,19 +18,17 @@ const createPaymentIntent = async (req, res, next) => {
       currency: 'usd',
       metadata: {
         userId: req.user.id,
-        planId: plan.id,
+        planId: plan._id.toString(),
         planName: plan.name
       }
     });
 
-    await prisma.payment.create({
-      data: {
-        userId: req.user.id,
-        paymentProviderId: paymentIntent.id,
-        amount: plan.price,
-        status: 'PENDING',
-        paymentMethod: 'card'
-      }
+    await Payment.create({
+      userId: req.user.id,
+      paymentProviderId: paymentIntent.id,
+      amount: plan.price,
+      status: 'PENDING',
+      paymentMethod: 'card'
     });
 
     res.json({
@@ -77,10 +75,10 @@ const handleWebhook = async (req, res) => {
 const handlePaymentSuccess = async (paymentIntent) => {
   const { id, metadata } = paymentIntent;
 
-  await prisma.payment.update({
-    where: { paymentProviderId: id },
-    data: { status: 'COMPLETED' }
-  });
+  await Payment.findOneAndUpdate(
+    { paymentProviderId: id },
+    { status: 'COMPLETED' }
+  );
 
   console.log(`Payment ${id} completed for user ${metadata.userId}`);
 };
@@ -88,29 +86,42 @@ const handlePaymentSuccess = async (paymentIntent) => {
 const handlePaymentFailed = async (paymentIntent) => {
   const { id } = paymentIntent;
 
-  await prisma.payment.update({
-    where: { paymentProviderId: id },
-    data: { status: 'FAILED' }
-  });
+  await Payment.findOneAndUpdate(
+    { paymentProviderId: id },
+    { status: 'FAILED' }
+  );
 
   console.log(`Payment ${id} failed`);
 };
 
 const getPaymentHistory = async (req, res, next) => {
   try {
-    const payments = await prisma.payment.findMany({
-      where: { userId: req.user.id },
-      include: {
-        subscription: {
-          include: {
-            plan: true
-          }
-        }
-      },
-      orderBy: { createdAt: 'desc' }
+    const payments = await Payment.find({ userId: req.user.id })
+      .sort({ createdAt: -1 })
+      .lean();
+
+    const subscriptionIds = payments
+      .map(p => p.subscriptionId)
+      .filter(Boolean);
+
+    const subscriptions = await Subscription.find({ _id: { $in: subscriptionIds } })
+      .populate('planId')
+      .lean();
+
+    const paymentsResponse = payments.map(payment => {
+      const subscription = subscriptions.find(s => s._id.toString() === payment.subscriptionId?.toString());
+      return {
+        ...payment,
+        id: payment._id,
+        subscription: subscription ? {
+          ...subscription,
+          id: subscription._id,
+          plan: subscription.planId ? { ...subscription.planId, id: subscription.planId._id } : null
+        } : null
+      };
     });
 
-    res.json({ payments });
+    res.json({ payments: paymentsResponse });
   } catch (error) {
     next(error);
   }

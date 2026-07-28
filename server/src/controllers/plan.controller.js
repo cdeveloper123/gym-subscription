@@ -1,17 +1,18 @@
-const prisma = require('../lib/prisma');
+const SubscriptionPlan = require('../models/SubscriptionPlan');
 
 const getAllPlans = async (req, res, next) => {
   try {
     const { includeInactive } = req.query;
 
-    const where = includeInactive === 'true' ? {} : { isActive: true };
+    const filter = includeInactive === 'true' ? {} : { isActive: true };
 
-    const plans = await prisma.subscriptionPlan.findMany({
-      where,
-      orderBy: { price: 'asc' }
-    });
+    const plans = await SubscriptionPlan.find(filter)
+      .sort({ price: 1 })
+      .lean();
 
-    res.json({ plans });
+    const plansResponse = plans.map(p => ({ ...p, id: p._id }));
+
+    res.json({ plans: plansResponse });
   } catch (error) {
     next(error);
   }
@@ -21,15 +22,13 @@ const getPlanById = async (req, res, next) => {
   try {
     const { id } = req.params;
 
-    const plan = await prisma.subscriptionPlan.findUnique({
-      where: { id }
-    });
+    const plan = await SubscriptionPlan.findById(id).lean();
 
     if (!plan) {
       return res.status(404).json({ error: 'Plan not found' });
     }
 
-    res.json({ plan });
+    res.json({ plan: { ...plan, id: plan._id } });
   } catch (error) {
     next(error);
   }
@@ -39,19 +38,17 @@ const createPlan = async (req, res, next) => {
   try {
     const { name, duration, price, features, isActive } = req.body;
 
-    const plan = await prisma.subscriptionPlan.create({
-      data: {
-        name,
-        duration,
-        price: parseFloat(price),
-        features: features || [],
-        isActive: isActive !== undefined ? isActive : true
-      }
+    const plan = await SubscriptionPlan.create({
+      name,
+      duration,
+      price: parseFloat(price),
+      features: features || [],
+      isActive: isActive !== undefined ? isActive : true
     });
 
     res.status(201).json({
       message: 'Plan created successfully',
-      plan
+      plan: { ...plan.toObject(), id: plan._id }
     });
   } catch (error) {
     next(error);
@@ -70,14 +67,15 @@ const updatePlan = async (req, res, next) => {
     if (features) updateData.features = features;
     if (isActive !== undefined) updateData.isActive = isActive;
 
-    const plan = await prisma.subscriptionPlan.update({
-      where: { id },
-      data: updateData
-    });
+    const plan = await SubscriptionPlan.findByIdAndUpdate(
+      id,
+      updateData,
+      { new: true }
+    ).lean();
 
     res.json({
       message: 'Plan updated successfully',
-      plan
+      plan: { ...plan, id: plan._id }
     });
   } catch (error) {
     next(error);
@@ -88,10 +86,7 @@ const deletePlan = async (req, res, next) => {
   try {
     const { id } = req.params;
 
-    await prisma.subscriptionPlan.update({
-      where: { id },
-      data: { isActive: false }
-    });
+    await SubscriptionPlan.findByIdAndUpdate(id, { isActive: false });
 
     res.json({ message: 'Plan deactivated successfully' });
   } catch (error) {
