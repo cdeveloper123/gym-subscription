@@ -41,11 +41,4 @@ const authenticate = async (req, res, next) => {
   }
 };
 
-const isAdmin = (req, res, next) => {
-  if (req.user.role !== 'ADMIN') {
-    return res.status(403).json({ error: 'Admin access required' });
-  }
-  next();
-};
-
-module.exports = { authenticate, isAdmin };
+module.exports = { authenticate };

@@ -67,11 +67,4 @@ export const paymentService = {
   getHistory: () => api.get('/payments/history')
 }
 
-export const adminService = {
-  getDashboard: () => api.get('/admin/dashboard'),
-  getUsers: (params) => api.get('/admin/users', { params }),
-  getSubscriptions: (params) => api.get('/admin/subscriptions', { params }),
-  getPayments: (params) => api.get('/admin/payments', { params })
-}
-
 export default api

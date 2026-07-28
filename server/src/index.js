@@ -9,7 +9,6 @@ const userRoutes = require('./routes/user.routes');
 const planRoutes = require('./routes/plan.routes');
 const subscriptionRoutes = require('./routes/subscription.routes');
 const paymentRoutes = require('./routes/payment.routes');
-const adminRoutes = require('./routes/admin.routes');
 
 const { errorHandler } = require('./middleware/error.middleware');
 
@@ -41,7 +40,6 @@ app.use('/api/users', userRoutes);
 app.use('/api/plans', planRoutes);
 app.use('/api/subscriptions', subscriptionRoutes);
 app.use('/api/payments', paymentRoutes);
-app.use('/api/admin', adminRoutes);
 
 // 404 handler
 app.use((req, res) => {
