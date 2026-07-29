@@ -21,6 +21,7 @@
     "jsonwebtoken": "^9.0.2",
     "morgan": "^1.10.0",
     "mysql2": "^3.23.2",
+    "node-cron": "^3.0.3",
     "stripe": "^14.10.0"
   },
   "devDependencies": {

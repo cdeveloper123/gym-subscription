@@ -10,10 +10,17 @@
     "build": "cd client && npm run build",
     "test": "cd server && npm test"
   },
-  "keywords": ["gym", "subscription", "management"],
+  "keywords": [
+    "gym",
+    "subscription",
+    "management"
+  ],
   "author": "",
   "license": "ISC",
   "devDependencies": {
     "concurrently": "^8.2.2"
+  },
+  "dependencies": {
+    "node-cron": "^4.6.0"
   }
 }

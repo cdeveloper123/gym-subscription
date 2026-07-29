@@ -5,6 +5,7 @@ require('dotenv').config();
 
 const { testConnection } = require('./config/database');
 const { seedDatabase } = require('./config/seed');
+const { startCronJobs } = require('./jobs/cronJobs');
 const authRoutes = require('./routes/auth.routes');
 const userRoutes = require('./routes/user.routes');
 const planRoutes = require('./routes/plan.routes');
@@ -61,6 +62,9 @@ const initializeServer = async () => {
     }
 
     await seedDatabase();
+
+    // Start cron jobs
+    startCronJobs();
 
     app.listen(PORT, () => {
       console.log(`Server running on port ${PORT}`);
