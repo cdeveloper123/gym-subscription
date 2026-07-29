@@ -12,7 +12,6 @@ import Dashboard from './pages/Dashboard'
 import Plans from './pages/Plans'
 import MySubscription from './pages/MySubscription'
 import Profile from './pages/Profile'
-import Blog from './pages/Blog'
 
 function App() {
   return (
@@ -27,7 +26,6 @@ function App() {
             <Route path="plans" element={<Plans />} />
             <Route path="my-subscription" element={<MySubscription />} />
             <Route path="profile" element={<Profile />} />
-            <Route path="blog" element={<Blog />} />
           </Route>
 
           <Route path="*" element={<Navigate to="/" replace />} />
