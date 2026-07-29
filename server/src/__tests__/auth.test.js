@@ -1,16 +1,14 @@
 const request = require('supertest');
-const mongoose = require('mongoose');
 const app = require('../index');
-const User = require('../models/User');
+const { storage } = require('../lib/storage');
 
 describe('Authentication', () => {
   beforeAll(async () => {
-    await mongoose.connect(process.env.DATABASE_URL);
-    await User.deleteMany({ email: /^test/ });
+    storage.users = storage.users.filter(u => !u.email.startsWith('test'));
   });
 
   afterAll(async () => {
-    await mongoose.disconnect();
+    // Clean up
   });
 
   describe('POST /api/auth/register', () => {

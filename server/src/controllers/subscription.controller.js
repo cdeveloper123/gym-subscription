@@ -1,27 +1,21 @@
-const Subscription = require('../models/Subscription');
-const SubscriptionPlan = require('../models/SubscriptionPlan');
-const Payment = require('../models/Payment');
+const { storage, generateId } = require('../lib/storage');
 
 const getMySubscription = async (req, res, next) => {
   try {
-    const subscription = await Subscription.findOne({
-      userId: req.user.id,
-      status: 'ACTIVE'
-    })
-      .populate('planId')
-      .sort({ createdAt: -1 })
-      .lean();
+    const subscription = storage.subscriptions
+      .filter(s => s.userId === req.user.id && s.status === 'ACTIVE')
+      .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))[0];
 
     if (subscription) {
-      const payments = await Payment.find({ subscriptionId: subscription._id })
-        .sort({ createdAt: -1 })
-        .lean();
+      const plan = storage.plans.find(p => p.id === subscription.planId);
+      const payments = storage.payments
+        .filter(p => p.subscriptionId === subscription.id)
+        .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
 
       const subscriptionResponse = {
         ...subscription,
-        id: subscription._id,
-        plan: subscription.planId ? { ...subscription.planId, id: subscription.planId._id } : null,
-        payments: payments.map(p => ({ ...p, id: p._id }))
+        plan,
+        payments
       };
 
       res.json({ subscription: subscriptionResponse });
@@ -35,21 +29,19 @@ const getMySubscription = async (req, res, next) => {
 
 const getSubscriptionHistory = async (req, res, next) => {
   try {
-    const subscriptions = await Subscription.find({ userId: req.user.id })
-      .populate('planId')
-      .sort({ createdAt: -1 })
-      .lean();
+    const subscriptions = storage.subscriptions
+      .filter(s => s.userId === req.user.id)
+      .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
 
-    const subscriptionIds = subscriptions.map(s => s._id);
-    const payments = await Payment.find({ subscriptionId: { $in: subscriptionIds } }).lean();
-
-    const subscriptionsResponse = subscriptions.map(sub => ({
-      ...sub,
-      id: sub._id,
-      plan: sub.planId ? { ...sub.planId, id: sub.planId._id } : null,
-      payments: payments.filter(p => p.subscriptionId?.toString() === sub._id.toString())
-        .map(p => ({ ...p, id: p._id }))
-    }));
+    const subscriptionsResponse = subscriptions.map(sub => {
+      const plan = storage.plans.find(p => p.id === sub.planId);
+      const payments = storage.payments.filter(p => p.subscriptionId === sub.id);
+      return {
+        ...sub,
+        plan,
+        payments
+      };
+    });
 
     res.json({ subscriptions: subscriptionsResponse });
   } catch (error) {
@@ -65,13 +57,13 @@ const purchaseSubscription = async (req, res, next) => {
       return res.status(400).json({ error: 'Payment intent ID is required' });
     }
 
-    const plan = await SubscriptionPlan.findById(planId);
+    const plan = storage.plans.find(p => p.id === planId);
 
     if (!plan || !plan.isActive) {
       return res.status(404).json({ error: 'Plan not found or inactive' });
     }
 
-    const payment = await Payment.findOne({ paymentProviderId: paymentIntentId });
+    const payment = storage.payments.find(p => p.paymentProviderId === paymentIntentId);
 
     if (!payment) {
       return res.status(400).json({ error: 'Payment not found' });
@@ -85,7 +77,7 @@ const purchaseSubscription = async (req, res, next) => {
       return res.status(402).json({ error: 'Payment not completed' });
     }
 
-    if (payment.userId.toString() !== req.user.id) {
+    if (payment.userId !== req.user.id) {
       return res.status(403).json({ error: 'Payment does not belong to this user' });
     }
 
@@ -93,10 +85,9 @@ const purchaseSubscription = async (req, res, next) => {
       return res.status(400).json({ error: 'Payment already used for a subscription' });
     }
 
-    const existingActive = await Subscription.findOne({
-      userId: req.user.id,
-      status: 'ACTIVE'
-    });
+    const existingActive = storage.subscriptions.find(s =>
+      s.userId === req.user.id && s.status === 'ACTIVE'
+    );
 
     if (existingActive) {
       return res.status(400).json({ error: 'You already have an active subscription' });
@@ -117,24 +108,25 @@ const purchaseSubscription = async (req, res, next) => {
         break;
     }
 
-    const subscription = await Subscription.create({
+    const subscription = {
+      id: generateId(),
       userId: req.user.id,
-      planId: plan._id,
+      planId: plan.id,
       status: 'ACTIVE',
       startDate,
-      endDate
-    });
+      endDate,
+      createdAt: new Date(),
+      updatedAt: new Date()
+    };
 
-    const populatedSubscription = await Subscription.findById(subscription._id)
-      .populate('planId')
-      .lean();
+    storage.subscriptions.push(subscription);
 
-    await Payment.findByIdAndUpdate(payment._id, { subscriptionId: subscription._id });
+    payment.subscriptionId = subscription.id;
+    payment.updatedAt = new Date();
 
     const subscriptionResponse = {
-      ...populatedSubscription,
-      id: populatedSubscription._id,
-      plan: populatedSubscription.planId ? { ...populatedSubscription.planId, id: populatedSubscription.planId._id } : null
+      ...subscription,
+      plan
     };
 
     res.status(201).json({
@@ -154,13 +146,16 @@ const renewSubscription = async (req, res, next) => {
       return res.status(400).json({ error: 'Payment intent ID is required' });
     }
 
-    const subscription = await Subscription.findById(subscriptionId).populate('planId');
+    const subscriptionIndex = storage.subscriptions.findIndex(s => s.id === subscriptionId);
 
-    if (!subscription || subscription.userId.toString() !== req.user.id) {
+    if (subscriptionIndex === -1 || storage.subscriptions[subscriptionIndex].userId !== req.user.id) {
       return res.status(404).json({ error: 'Subscription not found' });
     }
 
-    const payment = await Payment.findOne({ paymentProviderId: paymentIntentId });
+    const subscription = storage.subscriptions[subscriptionIndex];
+    const plan = storage.plans.find(p => p.id === subscription.planId);
+
+    const payment = storage.payments.find(p => p.paymentProviderId === paymentIntentId);
 
     if (!payment) {
       return res.status(400).json({ error: 'Payment not found' });
@@ -174,18 +169,18 @@ const renewSubscription = async (req, res, next) => {
       return res.status(402).json({ error: 'Payment not completed' });
     }
 
-    if (payment.userId.toString() !== req.user.id) {
+    if (payment.userId !== req.user.id) {
       return res.status(403).json({ error: 'Payment does not belong to this user' });
     }
 
-    if (payment.subscriptionId && payment.subscriptionId.toString() !== subscriptionId) {
+    if (payment.subscriptionId && payment.subscriptionId !== subscriptionId) {
       return res.status(400).json({ error: 'Payment already used for a different subscription' });
     }
 
     const startDate = new Date();
     let endDate = new Date(startDate);
 
-    switch (subscription.planId.duration) {
+    switch (plan.duration) {
       case 'MONTHLY':
         endDate.setMonth(endDate.getMonth() + 1);
         break;
@@ -197,24 +192,19 @@ const renewSubscription = async (req, res, next) => {
         break;
     }
 
-    const renewedSubscription = await Subscription.findByIdAndUpdate(
-      subscriptionId,
-      {
-        status: 'ACTIVE',
-        startDate,
-        endDate
-      },
-      { new: true }
-    ).populate('planId').lean();
+    subscription.status = 'ACTIVE';
+    subscription.startDate = startDate;
+    subscription.endDate = endDate;
+    subscription.updatedAt = new Date();
 
     if (!payment.subscriptionId) {
-      await Payment.findByIdAndUpdate(payment._id, { subscriptionId: subscription._id });
+      payment.subscriptionId = subscription.id;
+      payment.updatedAt = new Date();
     }
 
     const subscriptionResponse = {
-      ...renewedSubscription,
-      id: renewedSubscription._id,
-      plan: renewedSubscription.planId ? { ...renewedSubscription.planId, id: renewedSubscription.planId._id } : null
+      ...subscription,
+      plan
     };
 
     res.json({
@@ -230,21 +220,18 @@ const cancelSubscription = async (req, res, next) => {
   try {
     const { subscriptionId } = req.body;
 
-    const subscription = await Subscription.findById(subscriptionId);
+    const subscription = storage.subscriptions.find(s => s.id === subscriptionId);
 
-    if (!subscription || subscription.userId.toString() !== req.user.id) {
+    if (!subscription || subscription.userId !== req.user.id) {
       return res.status(404).json({ error: 'Subscription not found' });
     }
 
-    const updatedSubscription = await Subscription.findByIdAndUpdate(
-      subscriptionId,
-      { status: 'CANCELLED' },
-      { new: true }
-    ).lean();
+    subscription.status = 'CANCELLED';
+    subscription.updatedAt = new Date();
 
     res.json({
       message: 'Subscription cancelled successfully',
-      subscription: { ...updatedSubscription, id: updatedSubscription._id }
+      subscription
     });
   } catch (error) {
     next(error);

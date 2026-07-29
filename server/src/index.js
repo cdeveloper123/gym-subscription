@@ -3,7 +3,7 @@ const cors = require('cors');
 const morgan = require('morgan');
 require('dotenv').config();
 
-const connectDB = require('./lib/db');
+const { initializeStorage } = require('./lib/storage');
 const authRoutes = require('./routes/auth.routes');
 const userRoutes = require('./routes/user.routes');
 const planRoutes = require('./routes/plan.routes');
@@ -49,12 +49,12 @@ app.use((req, res) => {
 // Error handling middleware
 app.use(errorHandler);
 
-// Connect to MongoDB and start server
-connectDB().then(() => {
-  app.listen(PORT, () => {
-    console.log(`Server running on port ${PORT}`);
-    console.log(`Environment: ${process.env.NODE_ENV}`);
-  });
+// Initialize storage and start server
+initializeStorage();
+
+app.listen(PORT, () => {
+  console.log(`Server running on port ${PORT}`);
+  console.log(`Environment: ${process.env.NODE_ENV}`);
 });
 
 module.exports = app;

@@ -1,13 +1,12 @@
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
-const User = require('../models/User');
-const Subscription = require('../models/Subscription');
+const { storage, generateId } = require('../lib/storage');
 
 const register = async (req, res, next) => {
   try {
     const { email, password, name, phone, address } = req.body;
 
-    const existingUser = await User.findOne({ email });
+    const existingUser = storage.users.find(u => u.email === email);
 
     if (existingUser) {
       return res.status(400).json({ error: 'Email already registered' });
@@ -15,23 +14,28 @@ const register = async (req, res, next) => {
 
     const hashedPassword = await bcrypt.hash(password, 10);
 
-    const user = await User.create({
+    const user = {
+      id: generateId(),
       email,
       password: hashedPassword,
       name,
       phone,
       address,
-      role: 'USER'
-    });
+      role: 'USER',
+      createdAt: new Date(),
+      updatedAt: new Date()
+    };
+
+    storage.users.push(user);
 
     const token = jwt.sign(
-      { userId: user._id, role: user.role },
+      { userId: user.id, role: user.role },
       process.env.JWT_SECRET,
       { expiresIn: process.env.JWT_EXPIRES_IN }
     );
 
     const userResponse = {
-      id: user._id,
+      id: user.id,
       email: user.email,
       name: user.name,
       phone: user.phone,
@@ -54,7 +58,7 @@ const login = async (req, res, next) => {
   try {
     const { email, password } = req.body;
 
-    const user = await User.findOne({ email });
+    const user = storage.users.find(u => u.email === email);
 
     if (!user) {
       return res.status(401).json({ error: 'Invalid credentials' });
@@ -67,13 +71,13 @@ const login = async (req, res, next) => {
     }
 
     const token = jwt.sign(
-      { userId: user._id, role: user.role },
+      { userId: user.id, role: user.role },
       process.env.JWT_SECRET,
       { expiresIn: process.env.JWT_EXPIRES_IN }
     );
 
     const userResponse = {
-      id: user._id,
+      id: user.id,
       email: user.email,
       name: user.name,
       phone: user.phone,
@@ -94,18 +98,22 @@ const login = async (req, res, next) => {
 
 const getMe = async (req, res, next) => {
   try {
-    const user = await User.findById(req.user.id).select('-password').lean();
+    const user = storage.users.find(u => u.id === req.user.id);
 
-    const activeSubscriptions = await Subscription.find({
-      userId: user._id,
-      status: 'ACTIVE'
-    })
-      .populate('planId')
-      .sort({ createdAt: -1 })
-      .limit(1);
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    const activeSubscriptions = storage.subscriptions
+      .filter(s => s.userId === user.id && s.status === 'ACTIVE')
+      .map(sub => {
+        const plan = storage.plans.find(p => p.id === sub.planId);
+        return { ...sub, plan };
+      })
+      .slice(0, 1);
 
     const userResponse = {
-      id: user._id,
+      id: user.id,
       email: user.email,
       name: user.name,
       phone: user.phone,

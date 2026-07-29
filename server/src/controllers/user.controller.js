@@ -1,30 +1,30 @@
-const User = require('../models/User');
-const Subscription = require('../models/Subscription');
-const Payment = require('../models/Payment');
+const { storage } = require('../lib/storage');
 const bcrypt = require('bcryptjs');
 
 const getProfile = async (req, res, next) => {
   try {
-    const user = await User.findById(req.user.id).select('-password').lean();
+    const user = storage.users.find(u => u.id === req.user.id);
 
-    const subscriptions = await Subscription.find({ userId: user._id })
-      .populate('planId')
-      .sort({ createdAt: -1 })
-      .lean();
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
 
-    const subscriptionIds = subscriptions.map(s => s._id);
-    const payments = await Payment.find({ subscriptionId: { $in: subscriptionIds } }).lean();
+    const subscriptions = storage.subscriptions
+      .filter(s => s.userId === user.id)
+      .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
 
-    const subscriptionsWithPayments = subscriptions.map(sub => ({
-      ...sub,
-      id: sub._id,
-      plan: sub.planId ? { ...sub.planId, id: sub.planId._id } : null,
-      payments: payments.filter(p => p.subscriptionId?.toString() === sub._id.toString())
-        .map(p => ({ ...p, id: p._id }))
-    }));
+    const subscriptionsWithPayments = subscriptions.map(sub => {
+      const plan = storage.plans.find(p => p.id === sub.planId);
+      const payments = storage.payments.filter(p => p.subscriptionId === sub.id);
+      return {
+        ...sub,
+        plan,
+        payments
+      };
+    });
 
     const userResponse = {
-      id: user._id,
+      id: user.id,
       email: user.email,
       name: user.name,
       phone: user.phone,
@@ -44,18 +44,18 @@ const updateProfile = async (req, res, next) => {
   try {
     const { name, phone, address, currentPassword, newPassword } = req.body;
 
-    const updateData = {};
+    const userIndex = storage.users.findIndex(u => u.id === req.user.id);
 
-    if (name) updateData.name = name;
-    if (phone) updateData.phone = phone;
-    if (address) updateData.address = address;
+    if (userIndex === -1) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    const user = storage.users[userIndex];
 
     if (newPassword) {
       if (!currentPassword) {
         return res.status(400).json({ error: 'Current password required' });
       }
-
-      const user = await User.findById(req.user.id);
 
       const isPasswordValid = await bcrypt.compare(currentPassword, user.password);
 
@@ -63,23 +63,22 @@ const updateProfile = async (req, res, next) => {
         return res.status(400).json({ error: 'Current password is incorrect' });
       }
 
-      updateData.password = await bcrypt.hash(newPassword, 10);
+      user.password = await bcrypt.hash(newPassword, 10);
     }
 
-    const updatedUser = await User.findByIdAndUpdate(
-      req.user.id,
-      updateData,
-      { new: true }
-    ).select('-password').lean();
+    if (name) user.name = name;
+    if (phone) user.phone = phone;
+    if (address) user.address = address;
+    user.updatedAt = new Date();
 
     const userResponse = {
-      id: updatedUser._id,
-      email: updatedUser.email,
-      name: updatedUser.name,
-      phone: updatedUser.phone,
-      address: updatedUser.address,
-      role: updatedUser.role,
-      updatedAt: updatedUser.updatedAt
+      id: user.id,
+      email: user.email,
+      name: user.name,
+      phone: user.phone,
+      address: user.address,
+      role: user.role,
+      updatedAt: user.updatedAt
     };
 
     res.json({

@@ -1,13 +1,11 @@
 const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
-const SubscriptionPlan = require('../models/SubscriptionPlan');
-const Payment = require('../models/Payment');
-const Subscription = require('../models/Subscription');
+const { storage, generateId } = require('../lib/storage');
 
 const createPaymentIntent = async (req, res, next) => {
   try {
     const { planId } = req.body;
 
-    const plan = await SubscriptionPlan.findById(planId);
+    const plan = storage.plans.find(p => p.id === planId);
 
     if (!plan || !plan.isActive) {
       return res.status(404).json({ error: 'Plan not found or inactive' });
@@ -18,18 +16,23 @@ const createPaymentIntent = async (req, res, next) => {
       currency: 'usd',
       metadata: {
         userId: req.user.id,
-        planId: plan._id.toString(),
+        planId: plan.id,
         planName: plan.name
       }
     });
 
-    await Payment.create({
+    const payment = {
+      id: generateId(),
       userId: req.user.id,
       paymentProviderId: paymentIntent.id,
       amount: plan.price,
       status: 'PENDING',
-      paymentMethod: 'card'
-    });
+      paymentMethod: 'card',
+      createdAt: new Date(),
+      updatedAt: new Date()
+    };
+
+    storage.payments.push(payment);
 
     res.json({
       clientSecret: paymentIntent.client_secret,
@@ -75,10 +78,12 @@ const handleWebhook = async (req, res) => {
 const handlePaymentSuccess = async (paymentIntent) => {
   const { id, metadata } = paymentIntent;
 
-  await Payment.findOneAndUpdate(
-    { paymentProviderId: id },
-    { status: 'COMPLETED' }
-  );
+  const payment = storage.payments.find(p => p.paymentProviderId === id);
+
+  if (payment) {
+    payment.status = 'COMPLETED';
+    payment.updatedAt = new Date();
+  }
 
   console.log(`Payment ${id} completed for user ${metadata.userId}`);
 };
@@ -86,38 +91,37 @@ const handlePaymentSuccess = async (paymentIntent) => {
 const handlePaymentFailed = async (paymentIntent) => {
   const { id } = paymentIntent;
 
-  await Payment.findOneAndUpdate(
-    { paymentProviderId: id },
-    { status: 'FAILED' }
-  );
+  const payment = storage.payments.find(p => p.paymentProviderId === id);
+
+  if (payment) {
+    payment.status = 'FAILED';
+    payment.updatedAt = new Date();
+  }
 
   console.log(`Payment ${id} failed`);
 };
 
 const getPaymentHistory = async (req, res, next) => {
   try {
-    const payments = await Payment.find({ userId: req.user.id })
-      .sort({ createdAt: -1 })
-      .lean();
-
-    const subscriptionIds = payments
-      .map(p => p.subscriptionId)
-      .filter(Boolean);
-
-    const subscriptions = await Subscription.find({ _id: { $in: subscriptionIds } })
-      .populate('planId')
-      .lean();
+    const payments = storage.payments
+      .filter(p => p.userId === req.user.id)
+      .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
 
     const paymentsResponse = payments.map(payment => {
-      const subscription = subscriptions.find(s => s._id.toString() === payment.subscriptionId?.toString());
+      const subscription = storage.subscriptions.find(s => s.id === payment.subscriptionId);
+      let subscriptionData = null;
+
+      if (subscription) {
+        const plan = storage.plans.find(p => p.id === subscription.planId);
+        subscriptionData = {
+          ...subscription,
+          plan
+        };
+      }
+
       return {
         ...payment,
-        id: payment._id,
-        subscription: subscription ? {
-          ...subscription,
-          id: subscription._id,
-          plan: subscription.planId ? { ...subscription.planId, id: subscription.planId._id } : null
-        } : null
+        subscription: subscriptionData
       };
     });
 

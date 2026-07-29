@@ -1,5 +1,5 @@
 const jwt = require('jsonwebtoken');
-const User = require('../models/User');
+const { storage } = require('../lib/storage');
 
 const authenticate = async (req, res, next) => {
   try {
@@ -13,16 +13,14 @@ const authenticate = async (req, res, next) => {
 
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
 
-    const user = await User.findById(decoded.userId)
-      .select('-password')
-      .lean();
+    const user = storage.users.find(u => u.id === decoded.userId);
 
     if (!user) {
       return res.status(401).json({ error: 'User not found' });
     }
 
     req.user = {
-      id: user._id.toString(),
+      id: user.id,
       email: user.email,
       name: user.name,
       phone: user.phone,
