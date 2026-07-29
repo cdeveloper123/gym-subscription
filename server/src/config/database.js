@@ -1,44 +1,40 @@
-const mysql = require('mysql2/promise');
+const { Pool } = require('pg');
 
-let pool;
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL || 'postgresql://localhost:5432/gym_db',
+  ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false
+});
 
-const createPool = () => {
-  if (!pool) {
-    pool = mysql.createPool({
-      host: process.env.DB_HOST || 'localhost',
-      user: process.env.DB_USER || 'root',
-      password: process.env.DB_PASSWORD || '',
-      database: process.env.DB_NAME || 'gym_db',
-      waitForConnections: true,
-      connectionLimit: 10,
-      queueLimit: 0
-    });
+pool.on('error', (err) => {
+  console.error('Unexpected error on idle client', err);
+});
+
+const query = async (text, params) => {
+  const start = Date.now();
+  try {
+    const res = await pool.query(text, params);
+    const duration = Date.now() - start;
+    console.log('Executed query', { text, duration, rows: res.rowCount });
+    return res;
+  } catch (error) {
+    console.error('Query error:', error);
+    throw error;
   }
-  return pool;
-};
-
-const getConnection = async () => {
-  const pool = createPool();
-  return await pool.getConnection();
-};
-
-const query = async (sql, params) => {
-  const pool = createPool();
-  const [rows] = await pool.execute(sql, params);
-  return rows;
 };
 
 const testConnection = async () => {
   try {
-    const pool = createPool();
-    const connection = await pool.getConnection();
-    console.log('Database connected successfully');
-    connection.release();
+    const res = await pool.query('SELECT NOW()');
+    console.log('PostgreSQL connected successfully:', res.rows[0].now);
     return true;
   } catch (error) {
-    console.error('Database connection failed:', error.message);
+    console.error('PostgreSQL connection error:', error.message);
     return false;
   }
 };
 
-module.exports = { createPool, getConnection, query, testConnection };
+module.exports = {
+  query,
+  pool,
+  testConnection
+};

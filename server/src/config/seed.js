@@ -1,14 +1,5 @@
-const { query } = require('./database');
 const bcrypt = require('bcryptjs');
-const { v4: uuidv4 } = require('crypto').randomUUID ? require('crypto') : { randomUUID: () => Math.random().toString(36).substr(2, 9) + Math.random().toString(36).substr(2, 9) };
-
-const generateId = () => {
-  try {
-    return require('crypto').randomUUID();
-  } catch {
-    return Math.random().toString(36).substr(2, 9) + Math.random().toString(36).substr(2, 9);
-  }
-};
+const { query } = require('./database');
 
 const seedDatabase = async () => {
   try {
@@ -16,7 +7,7 @@ const seedDatabase = async () => {
 
     // Check if data already exists
     const existingPlans = await query('SELECT COUNT(*) as count FROM plans');
-    if (existingPlans[0].count > 0) {
+    if (parseInt(existingPlans.rows[0].count) > 0) {
       console.log('Database already seeded. Skipping...');
       return;
     }
@@ -24,7 +15,6 @@ const seedDatabase = async () => {
     // Seed plans
     const plans = [
       {
-        id: generateId(),
         name: 'Basic Plan',
         duration: 'MONTHLY',
         price: 29.99,
@@ -33,11 +23,9 @@ const seedDatabase = async () => {
           'Locker room access',
           'Free Wi-Fi',
           'Standard hours (6 AM - 10 PM)'
-        ]),
-        is_active: true
+        ])
       },
       {
-        id: generateId(),
         name: 'Standard Plan',
         duration: 'QUARTERLY',
         price: 79.99,
@@ -47,11 +35,9 @@ const seedDatabase = async () => {
           '1 personal training session per month',
           '24/7 gym access',
           'Towel service'
-        ]),
-        is_active: true
+        ])
       },
       {
-        id: generateId(),
         name: 'Premium Plan',
         duration: 'YEARLY',
         price: 299.99,
@@ -63,15 +49,14 @@ const seedDatabase = async () => {
           'Guest passes (5 per month)',
           'Priority class booking',
           'Free parking'
-        ]),
-        is_active: true
+        ])
       }
     ];
 
     for (const plan of plans) {
       await query(
-        'INSERT INTO plans (id, name, duration, price, features, is_active) VALUES (?, ?, ?, ?, ?, ?)',
-        [plan.id, plan.name, plan.duration, plan.price, plan.features, plan.is_active]
+        'INSERT INTO plans (name, duration, price, features, is_active) VALUES ($1, $2, $3, $4, $5)',
+        [plan.name, plan.duration, plan.price, plan.features, true]
       );
     }
 
@@ -79,11 +64,10 @@ const seedDatabase = async () => {
 
     // Seed sample user
     const hashedPassword = await bcrypt.hash('User123!', 10);
-    const userId = generateId();
 
     await query(
-      'INSERT INTO users (id, email, password, name, phone, address, role) VALUES (?, ?, ?, ?, ?, ?, ?)',
-      [userId, 'user@gym.com', hashedPassword, 'Test User', '+1987654321', '456 User Avenue, City', 'USER']
+      'INSERT INTO users (email, password, name, phone, address, role) VALUES ($1, $2, $3, $4, $5, $6)',
+      ['user@gym.com', hashedPassword, 'Test User', '+1987654321', '456 User Avenue, City', 'USER']
     );
 
     console.log('Sample user seeded successfully');
@@ -98,4 +82,4 @@ const seedDatabase = async () => {
   }
 };
 
-module.exports = { seedDatabase };
+module.exports = seedDatabase;

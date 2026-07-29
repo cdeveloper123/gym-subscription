@@ -1,30 +1,28 @@
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
-const User = require('../models/User');
+const { query } = require('../config/database');
 
 const register = async (req, res, next) => {
   try {
     const { email, password, name, phone, address } = req.body;
 
-    const existingUser = await User.findOne({ email });
+    const existingUsers = await query('SELECT id FROM users WHERE email = $1', [email]);
 
-    if (existingUser) {
+    if (existingUsers.rows.length > 0) {
       return res.status(400).json({ error: 'Email already registered' });
     }
 
     const hashedPassword = await bcrypt.hash(password, 10);
 
-    const user = await User.create({
-      email,
-      password: hashedPassword,
-      name,
-      phone,
-      address,
-      role: 'USER'
-    });
+    const result = await query(
+      'INSERT INTO users (email, password, name, phone, address, role) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id, email, name, phone, address, role, created_at',
+      [email, hashedPassword, name, phone, address, 'USER']
+    );
+
+    const user = result.rows[0];
 
     const token = jwt.sign(
-      { userId: user._id, role: user.role },
+      { userId: user.id, role: user.role },
       process.env.JWT_SECRET,
       { expiresIn: process.env.JWT_EXPIRES_IN }
     );
@@ -32,13 +30,13 @@ const register = async (req, res, next) => {
     res.status(201).json({
       message: 'User registered successfully',
       user: {
-        id: user._id,
+        id: user.id,
         email: user.email,
         name: user.name,
         phone: user.phone,
         address: user.address,
         role: user.role,
-        createdAt: user.createdAt
+        createdAt: user.created_at
       },
       token
     });
@@ -51,11 +49,13 @@ const login = async (req, res, next) => {
   try {
     const { email, password } = req.body;
 
-    const user = await User.findOne({ email });
+    const result = await query('SELECT * FROM users WHERE email = $1', [email]);
 
-    if (!user) {
+    if (result.rows.length === 0) {
       return res.status(401).json({ error: 'Invalid credentials' });
     }
+
+    const user = result.rows[0];
 
     const isPasswordValid = await bcrypt.compare(password, user.password);
 
@@ -64,7 +64,7 @@ const login = async (req, res, next) => {
     }
 
     const token = jwt.sign(
-      { userId: user._id, role: user.role },
+      { userId: user.id, role: user.role },
       process.env.JWT_SECRET,
       { expiresIn: process.env.JWT_EXPIRES_IN }
     );
@@ -72,13 +72,13 @@ const login = async (req, res, next) => {
     res.json({
       message: 'Login successful',
       user: {
-        id: user._id,
+        id: user.id,
         email: user.email,
         name: user.name,
         phone: user.phone,
         address: user.address,
         role: user.role,
-        createdAt: user.createdAt
+        createdAt: user.created_at
       },
       token
     });
@@ -89,47 +89,54 @@ const login = async (req, res, next) => {
 
 const getMe = async (req, res, next) => {
   try {
-    const user = await User.findById(req.user.id).select('-password');
+    const result = await query(
+      'SELECT id, email, name, phone, address, role, created_at FROM users WHERE id = $1',
+      [req.user.id]
+    );
 
-    if (!user) {
+    if (result.rows.length === 0) {
       return res.status(404).json({ error: 'User not found' });
     }
 
-    const Subscription = require('../models/Subscription');
+    const user = result.rows[0];
 
-    const subscriptions = await Subscription.find({
-      userId: user._id,
-      status: 'ACTIVE'
-    })
-      .populate('planId')
-      .limit(1);
+    const subscriptions = await query(
+      `SELECT s.*, p.name as plan_name, p.duration, p.price, p.features
+       FROM subscriptions s
+       LEFT JOIN plans p ON s.plan_id = p.id
+       WHERE s.user_id = $1 AND s.status = 'ACTIVE'
+       LIMIT 1`,
+      [user.id]
+    );
+
+    const activeSubscriptions = subscriptions.rows.map(sub => ({
+      id: sub.id,
+      userId: sub.user_id,
+      planId: sub.plan_id,
+      status: sub.status,
+      startDate: sub.start_date,
+      endDate: sub.end_date,
+      stripeSubscriptionId: sub.stripe_subscription_id,
+      createdAt: sub.created_at,
+      plan: {
+        id: sub.plan_id,
+        name: sub.plan_name,
+        duration: sub.duration,
+        price: parseFloat(sub.price),
+        features: sub.features
+      }
+    }));
 
     res.json({
       user: {
-        id: user._id,
+        id: user.id,
         email: user.email,
         name: user.name,
         phone: user.phone,
         address: user.address,
         role: user.role,
-        createdAt: user.createdAt,
-        subscriptions: subscriptions.map(sub => ({
-          id: sub._id,
-          userId: sub.userId,
-          planId: sub.planId._id,
-          status: sub.status,
-          startDate: sub.startDate,
-          endDate: sub.endDate,
-          stripeSubscriptionId: sub.stripeSubscriptionId,
-          createdAt: sub.createdAt,
-          plan: {
-            id: sub.planId._id,
-            name: sub.planId.name,
-            duration: sub.planId.duration,
-            price: sub.planId.price,
-            features: sub.planId.features
-          }
-        }))
+        createdAt: user.created_at,
+        subscriptions: activeSubscriptions
       }
     });
   } catch (error) {
