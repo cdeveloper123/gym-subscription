@@ -1,34 +1,37 @@
 const bcrypt = require('bcryptjs');
-const { query } = require('../config/database');
+const supabase = require('../config/supabase');
 
 const getProfile = async (req, res, next) => {
   try {
-    const result = await query(
-      'SELECT id, email, name, phone, address, role, created_at FROM users WHERE id = $1',
-      [req.user.id]
-    );
+    const { data: user, error } = await supabase
+      .from('users')
+      .select('id, email, name, phone, address, role, created_at')
+      .eq('id', req.user.id)
+      .single();
 
-    if (result.rows.length === 0) {
+    if (error || !user) {
       return res.status(404).json({ error: 'User not found' });
     }
 
-    const user = result.rows[0];
+    const { data: subscriptions, error: subError } = await supabase
+      .from('subscriptions')
+      .select(`
+        *,
+        plans (*)
+      `)
+      .eq('user_id', user.id)
+      .order('created_at', { ascending: false });
 
-    const subscriptions = await query(
-      `SELECT s.*, p.name as plan_name, p.duration, p.price, p.features
-       FROM subscriptions s
-       LEFT JOIN plans p ON s.plan_id = p.id
-       WHERE s.user_id = $1
-       ORDER BY s.created_at DESC`,
-      [user.id]
-    );
+    if (subError) throw subError;
 
     const subscriptionsWithPayments = await Promise.all(
-      subscriptions.rows.map(async (sub) => {
-        const payments = await query(
-          'SELECT * FROM payments WHERE subscription_id = $1',
-          [sub.id]
-        );
+      subscriptions.map(async (sub) => {
+        const { data: payments, error: payError } = await supabase
+          .from('payments')
+          .select('*')
+          .eq('subscription_id', sub.id);
+
+        if (payError) throw payError;
 
         return {
           id: sub.id,
@@ -40,13 +43,13 @@ const getProfile = async (req, res, next) => {
           stripeSubscriptionId: sub.stripe_subscription_id,
           createdAt: sub.created_at,
           plan: {
-            id: sub.plan_id,
-            name: sub.plan_name,
-            duration: sub.duration,
-            price: parseFloat(sub.price),
-            features: sub.features
+            id: sub.plans.id,
+            name: sub.plans.name,
+            duration: sub.plans.duration,
+            price: parseFloat(sub.plans.price),
+            features: sub.plans.features
           },
-          payments: payments.rows.map(p => ({
+          payments: payments.map(p => ({
             id: p.id,
             userId: p.user_id,
             subscriptionId: p.subscription_id,
@@ -82,16 +85,17 @@ const updateProfile = async (req, res, next) => {
   try {
     const { name, phone, address, currentPassword, newPassword } = req.body;
 
-    const result = await query('SELECT * FROM users WHERE id = $1', [req.user.id]);
+    const { data: user, error } = await supabase
+      .from('users')
+      .select('*')
+      .eq('id', req.user.id)
+      .single();
 
-    if (result.rows.length === 0) {
+    if (error || !user) {
       return res.status(404).json({ error: 'User not found' });
     }
 
-    const user = result.rows[0];
-    const updates = [];
-    const values = [];
-    let paramCount = 1;
+    const updates = {};
 
     if (newPassword) {
       if (!currentPassword) {
@@ -104,40 +108,21 @@ const updateProfile = async (req, res, next) => {
         return res.status(400).json({ error: 'Current password is incorrect' });
       }
 
-      const hashedPassword = await bcrypt.hash(newPassword, 10);
-      updates.push(`password = $${paramCount++}`);
-      values.push(hashedPassword);
+      updates.password = await bcrypt.hash(newPassword, 10);
     }
 
-    if (name) {
-      updates.push(`name = $${paramCount++}`);
-      values.push(name);
-    }
+    if (name) updates.name = name;
+    if (phone) updates.phone = phone;
+    if (address) updates.address = address;
 
-    if (phone) {
-      updates.push(`phone = $${paramCount++}`);
-      values.push(phone);
-    }
+    const { data: updatedUser, error: updateError } = await supabase
+      .from('users')
+      .update(updates)
+      .eq('id', req.user.id)
+      .select('id, email, name, phone, address, role, updated_at')
+      .single();
 
-    if (address) {
-      updates.push(`address = $${paramCount++}`);
-      values.push(address);
-    }
-
-    if (updates.length > 0) {
-      values.push(req.user.id);
-      await query(
-        `UPDATE users SET ${updates.join(', ')}, updated_at = NOW() WHERE id = $${paramCount} RETURNING id, email, name, phone, address, role, updated_at`,
-        values
-      );
-    }
-
-    const updatedResult = await query(
-      'SELECT id, email, name, phone, address, role, updated_at FROM users WHERE id = $1',
-      [req.user.id]
-    );
-
-    const updatedUser = updatedResult.rows[0];
+    if (updateError) throw updateError;
 
     res.json({
       message: 'Profile updated successfully',

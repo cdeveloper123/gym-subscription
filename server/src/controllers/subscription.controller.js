@@ -1,27 +1,33 @@
-const { query } = require('../config/database');
+const supabase = require('../config/supabase');
 
 const getMySubscription = async (req, res, next) => {
   try {
-    const subscriptions = await query(
-      `SELECT s.*, p.name as plan_name, p.duration, p.price, p.features
-       FROM subscriptions s
-       LEFT JOIN plans p ON s.plan_id = p.id
-       WHERE s.user_id = $1 AND s.status = 'ACTIVE'
-       ORDER BY s.created_at DESC
-       LIMIT 1`,
-      [req.user.id]
-    );
+    const { data: subscriptions, error } = await supabase
+      .from('subscriptions')
+      .select(`
+        *,
+        plans (*)
+      `)
+      .eq('user_id', req.user.id)
+      .eq('status', 'ACTIVE')
+      .order('created_at', { ascending: false })
+      .limit(1);
 
-    if (subscriptions.rows.length === 0) {
+    if (error) throw error;
+
+    if (!subscriptions || subscriptions.length === 0) {
       return res.json({ subscription: null });
     }
 
-    const sub = subscriptions.rows[0];
+    const sub = subscriptions[0];
 
-    const payments = await query(
-      'SELECT * FROM payments WHERE subscription_id = $1 ORDER BY created_at DESC',
-      [sub.id]
-    );
+    const { data: payments, error: payError } = await supabase
+      .from('payments')
+      .select('*')
+      .eq('subscription_id', sub.id)
+      .order('created_at', { ascending: false });
+
+    if (payError) throw payError;
 
     res.json({
       subscription: {
@@ -35,13 +41,13 @@ const getMySubscription = async (req, res, next) => {
         createdAt: sub.created_at,
         updatedAt: sub.updated_at,
         plan: {
-          id: sub.plan_id,
-          name: sub.plan_name,
-          duration: sub.duration,
-          price: parseFloat(sub.price),
-          features: sub.features
+          id: sub.plans.id,
+          name: sub.plans.name,
+          duration: sub.plans.duration,
+          price: parseFloat(sub.plans.price),
+          features: sub.plans.features
         },
-        payments: payments.rows.map(p => ({
+        payments: payments.map(p => ({
           id: p.id,
           userId: p.user_id,
           subscriptionId: p.subscription_id,
@@ -61,21 +67,25 @@ const getMySubscription = async (req, res, next) => {
 
 const getSubscriptionHistory = async (req, res, next) => {
   try {
-    const subscriptions = await query(
-      `SELECT s.*, p.name as plan_name, p.duration, p.price, p.features
-       FROM subscriptions s
-       LEFT JOIN plans p ON s.plan_id = p.id
-       WHERE s.user_id = $1
-       ORDER BY s.created_at DESC`,
-      [req.user.id]
-    );
+    const { data: subscriptions, error } = await supabase
+      .from('subscriptions')
+      .select(`
+        *,
+        plans (*)
+      `)
+      .eq('user_id', req.user.id)
+      .order('created_at', { ascending: false });
+
+    if (error) throw error;
 
     const subscriptionsResponse = await Promise.all(
-      subscriptions.rows.map(async (sub) => {
-        const payments = await query(
-          'SELECT * FROM payments WHERE subscription_id = $1',
-          [sub.id]
-        );
+      subscriptions.map(async (sub) => {
+        const { data: payments, error: payError } = await supabase
+          .from('payments')
+          .select('*')
+          .eq('subscription_id', sub.id);
+
+        if (payError) throw payError;
 
         return {
           id: sub.id,
@@ -88,13 +98,13 @@ const getSubscriptionHistory = async (req, res, next) => {
           createdAt: sub.created_at,
           updatedAt: sub.updated_at,
           plan: {
-            id: sub.plan_id,
-            name: sub.plan_name,
-            duration: sub.duration,
-            price: parseFloat(sub.price),
-            features: sub.features
+            id: sub.plans.id,
+            name: sub.plans.name,
+            duration: sub.plans.duration,
+            price: parseFloat(sub.plans.price),
+            features: sub.plans.features
           },
-          payments: payments.rows.map(p => ({
+          payments: payments.map(p => ({
             id: p.id,
             userId: p.user_id,
             subscriptionId: p.subscription_id,
@@ -123,24 +133,26 @@ const purchaseSubscription = async (req, res, next) => {
       return res.status(400).json({ error: 'Payment intent ID is required' });
     }
 
-    const plans = await query('SELECT * FROM plans WHERE id = $1 AND is_active = TRUE', [planId]);
+    const { data: plan, error: planError } = await supabase
+      .from('plans')
+      .select('*')
+      .eq('id', planId)
+      .eq('is_active', true)
+      .single();
 
-    if (plans.rows.length === 0) {
+    if (planError || !plan) {
       return res.status(404).json({ error: 'Plan not found or inactive' });
     }
 
-    const plan = plans.rows[0];
+    const { data: payment, error: payError } = await supabase
+      .from('payments')
+      .select('*')
+      .eq('stripe_payment_intent_id', paymentIntentId)
+      .single();
 
-    const payments = await query(
-      'SELECT * FROM payments WHERE stripe_payment_intent_id = $1',
-      [paymentIntentId]
-    );
-
-    if (payments.rows.length === 0) {
+    if (payError || !payment) {
       return res.status(400).json({ error: 'Payment not found' });
     }
-
-    const payment = payments.rows[0];
 
     if (payment.status === 'FAILED') {
       return res.status(400).json({ error: 'Payment failed' });
@@ -158,12 +170,16 @@ const purchaseSubscription = async (req, res, next) => {
       return res.status(400).json({ error: 'Payment already used for a subscription' });
     }
 
-    const existingActive = await query(
-      'SELECT id FROM subscriptions WHERE user_id = $1 AND status = $2',
-      [req.user.id, 'ACTIVE']
-    );
+    const { data: existingActive, error: activeError } = await supabase
+      .from('subscriptions')
+      .select('id')
+      .eq('user_id', req.user.id)
+      .eq('status', 'ACTIVE')
+      .limit(1);
 
-    if (existingActive.rows.length > 0) {
+    if (activeError) throw activeError;
+
+    if (existingActive && existingActive.length > 0) {
       return res.status(400).json({ error: 'You already have an active subscription' });
     }
 
@@ -182,17 +198,26 @@ const purchaseSubscription = async (req, res, next) => {
         break;
     }
 
-    const newSubscription = await query(
-      'INSERT INTO subscriptions (user_id, plan_id, status, start_date, end_date) VALUES ($1, $2, $3, $4, $5) RETURNING *',
-      [req.user.id, plan.id, 'ACTIVE', startDate, endDate]
-    );
+    const { data: subscription, error: subError } = await supabase
+      .from('subscriptions')
+      .insert([{
+        user_id: req.user.id,
+        plan_id: plan.id,
+        status: 'ACTIVE',
+        start_date: startDate.toISOString(),
+        end_date: endDate.toISOString()
+      }])
+      .select()
+      .single();
 
-    const subscription = newSubscription.rows[0];
+    if (subError) throw subError;
 
-    await query(
-      'UPDATE payments SET subscription_id = $1, updated_at = NOW() WHERE id = $2',
-      [subscription.id, payment.id]
-    );
+    const { error: updatePayError } = await supabase
+      .from('payments')
+      .update({ subscription_id: subscription.id })
+      .eq('id', payment.id);
+
+    if (updatePayError) throw updatePayError;
 
     res.status(201).json({
       message: 'Subscription purchased successfully',
@@ -227,29 +252,29 @@ const renewSubscription = async (req, res, next) => {
       return res.status(400).json({ error: 'Payment intent ID is required' });
     }
 
-    const subscriptions = await query(
-      `SELECT s.*, p.* FROM subscriptions s
-       LEFT JOIN plans p ON s.plan_id = p.id
-       WHERE s.id = $1 AND s.user_id = $2`,
-      [subscriptionId, req.user.id]
-    );
+    const { data: subscription, error: subError } = await supabase
+      .from('subscriptions')
+      .select(`
+        *,
+        plans (*)
+      `)
+      .eq('id', subscriptionId)
+      .eq('user_id', req.user.id)
+      .single();
 
-    if (subscriptions.rows.length === 0) {
+    if (subError || !subscription) {
       return res.status(404).json({ error: 'Subscription not found' });
     }
 
-    const subscription = subscriptions.rows[0];
+    const { data: payment, error: payError } = await supabase
+      .from('payments')
+      .select('*')
+      .eq('stripe_payment_intent_id', paymentIntentId)
+      .single();
 
-    const payments = await query(
-      'SELECT * FROM payments WHERE stripe_payment_intent_id = $1',
-      [paymentIntentId]
-    );
-
-    if (payments.rows.length === 0) {
+    if (payError || !payment) {
       return res.status(400).json({ error: 'Payment not found' });
     }
-
-    const payment = payments.rows[0];
 
     if (payment.status === 'FAILED') {
       return res.status(400).json({ error: 'Payment failed' });
@@ -270,7 +295,7 @@ const renewSubscription = async (req, res, next) => {
     const startDate = new Date();
     let endDate = new Date(startDate);
 
-    switch (subscription.duration) {
+    switch (subscription.plans.duration) {
       case 'MONTHLY':
         endDate.setMonth(endDate.getMonth() + 1);
         break;
@@ -282,20 +307,25 @@ const renewSubscription = async (req, res, next) => {
         break;
     }
 
-    await query(
-      'UPDATE subscriptions SET status = $1, start_date = $2, end_date = $3, updated_at = NOW() WHERE id = $4',
-      ['ACTIVE', startDate, endDate, subscriptionId]
-    );
+    const { data: updatedSubscription, error: updateError } = await supabase
+      .from('subscriptions')
+      .update({
+        status: 'ACTIVE',
+        start_date: startDate.toISOString(),
+        end_date: endDate.toISOString()
+      })
+      .eq('id', subscriptionId)
+      .select()
+      .single();
+
+    if (updateError) throw updateError;
 
     if (!payment.subscription_id) {
-      await query(
-        'UPDATE payments SET subscription_id = $1, updated_at = NOW() WHERE id = $2',
-        [subscriptionId, payment.id]
-      );
+      await supabase
+        .from('payments')
+        .update({ subscription_id: subscriptionId })
+        .eq('id', payment.id);
     }
-
-    const updatedSubscriptions = await query('SELECT * FROM subscriptions WHERE id = $1', [subscriptionId]);
-    const updatedSubscription = updatedSubscriptions.rows[0];
 
     res.json({
       message: 'Subscription renewed successfully',
@@ -309,11 +339,11 @@ const renewSubscription = async (req, res, next) => {
         createdAt: updatedSubscription.created_at,
         updatedAt: updatedSubscription.updated_at,
         plan: {
-          id: subscription.id,
-          name: subscription.name,
-          duration: subscription.duration,
-          price: parseFloat(subscription.price),
-          features: subscription.features
+          id: subscription.plans.id,
+          name: subscription.plans.name,
+          duration: subscription.plans.duration,
+          price: parseFloat(subscription.plans.price),
+          features: subscription.plans.features
         }
       }
     });
@@ -326,34 +356,37 @@ const cancelSubscription = async (req, res, next) => {
   try {
     const { subscriptionId } = req.body;
 
-    const subscriptions = await query(
-      'SELECT * FROM subscriptions WHERE id = $1 AND user_id = $2',
-      [subscriptionId, req.user.id]
-    );
+    const { data: subscription, error: checkError } = await supabase
+      .from('subscriptions')
+      .select('*')
+      .eq('id', subscriptionId)
+      .eq('user_id', req.user.id)
+      .single();
 
-    if (subscriptions.rows.length === 0) {
+    if (checkError || !subscription) {
       return res.status(404).json({ error: 'Subscription not found' });
     }
 
-    await query(
-      'UPDATE subscriptions SET status = $1, updated_at = NOW() WHERE id = $2',
-      ['CANCELLED', subscriptionId]
-    );
+    const { data: updatedSubscription, error } = await supabase
+      .from('subscriptions')
+      .update({ status: 'CANCELLED' })
+      .eq('id', subscriptionId)
+      .select()
+      .single();
 
-    const updatedSubscriptions = await query('SELECT * FROM subscriptions WHERE id = $1', [subscriptionId]);
-    const subscription = updatedSubscriptions.rows[0];
+    if (error) throw error;
 
     res.json({
       message: 'Subscription cancelled successfully',
       subscription: {
-        id: subscription.id,
-        userId: subscription.user_id,
-        planId: subscription.plan_id,
-        status: subscription.status,
-        startDate: subscription.start_date,
-        endDate: subscription.end_date,
-        createdAt: subscription.created_at,
-        updatedAt: subscription.updated_at
+        id: updatedSubscription.id,
+        userId: updatedSubscription.user_id,
+        planId: updatedSubscription.plan_id,
+        status: updatedSubscription.status,
+        startDate: updatedSubscription.start_date,
+        endDate: updatedSubscription.end_date,
+        createdAt: updatedSubscription.created_at,
+        updatedAt: updatedSubscription.updated_at
       }
     });
   } catch (error) {
