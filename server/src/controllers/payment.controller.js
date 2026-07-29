@@ -1,43 +1,35 @@
 const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
-const supabase = require('../config/supabase');
+const Payment = require('../models/Payment');
+const Plan = require('../models/Plan');
 
 const createPaymentIntent = async (req, res, next) => {
   try {
     const { planId } = req.body;
 
-    const { data: plan, error } = await supabase
-      .from('plans')
-      .select('*')
-      .eq('id', planId)
-      .eq('is_active', true)
-      .single();
+    const plan = await Plan.findById(planId);
 
-    if (error || !plan) {
+    if (!plan || !plan.isActive) {
       return res.status(404).json({ error: 'Plan not found or inactive' });
     }
 
     const paymentIntent = await stripe.paymentIntents.create({
-      amount: Math.round(parseFloat(plan.price) * 100),
+      amount: Math.round(plan.price * 100),
       currency: 'usd',
       metadata: {
         userId: req.user.id,
-        planId: plan.id,
+        planId: plan._id.toString(),
         planName: plan.name
       }
     });
 
-    const { error: insertError } = await supabase
-      .from('payments')
-      .insert([{
-        user_id: req.user.id,
-        amount: plan.price,
-        currency: 'USD',
-        status: 'PENDING',
-        stripe_payment_intent_id: paymentIntent.id,
-        payment_method: 'card'
-      }]);
-
-    if (insertError) throw insertError;
+    await Payment.create({
+      userId: req.user.id,
+      amount: plan.price,
+      currency: 'USD',
+      status: 'PENDING',
+      stripePaymentIntentId: paymentIntent.id,
+      paymentMethod: 'card'
+    });
 
     res.json({
       clientSecret: paymentIntent.client_secret,
@@ -83,14 +75,10 @@ const handleWebhook = async (req, res) => {
 const handlePaymentSuccess = async (paymentIntent) => {
   const { id, metadata } = paymentIntent;
 
-  const { error } = await supabase
-    .from('payments')
-    .update({ status: 'COMPLETED' })
-    .eq('stripe_payment_intent_id', id);
-
-  if (error) {
-    console.error('Error updating payment:', error);
-  }
+  await Payment.updateOne(
+    { stripePaymentIntentId: id },
+    { status: 'COMPLETED' }
+  );
 
   console.log(`Payment ${id} completed for user ${metadata.userId}`);
 };
@@ -98,67 +86,58 @@ const handlePaymentSuccess = async (paymentIntent) => {
 const handlePaymentFailed = async (paymentIntent) => {
   const { id } = paymentIntent;
 
-  const { error } = await supabase
-    .from('payments')
-    .update({ status: 'FAILED' })
-    .eq('stripe_payment_intent_id', id);
-
-  if (error) {
-    console.error('Error updating payment:', error);
-  }
+  await Payment.updateOne(
+    { stripePaymentIntentId: id },
+    { status: 'FAILED' }
+  );
 
   console.log(`Payment ${id} failed`);
 };
 
 const getPaymentHistory = async (req, res, next) => {
   try {
-    const { data: payments, error } = await supabase
-      .from('payments')
-      .select(`
-        *,
-        subscriptions (
-          *,
-          plans (*)
-        )
-      `)
-      .eq('user_id', req.user.id)
-      .order('created_at', { ascending: false });
-
-    if (error) throw error;
+    const payments = await Payment.find({ userId: req.user.id })
+      .populate({
+        path: 'subscriptionId',
+        populate: {
+          path: 'planId'
+        }
+      })
+      .sort({ createdAt: -1 });
 
     const paymentsResponse = payments.map(payment => {
       let subscriptionData = null;
 
-      if (payment.subscriptions) {
-        const sub = payment.subscriptions;
+      if (payment.subscriptionId) {
+        const sub = payment.subscriptionId;
         subscriptionData = {
-          id: sub.id,
-          userId: sub.user_id,
-          planId: sub.plan_id,
+          id: sub._id,
+          userId: sub.userId,
+          planId: sub.planId._id,
           status: sub.status,
-          startDate: sub.start_date,
-          endDate: sub.end_date,
-          createdAt: sub.created_at,
-          plan: sub.plans ? {
-            id: sub.plans.id,
-            name: sub.plans.name,
-            duration: sub.plans.duration,
-            price: parseFloat(sub.plans.price),
-            features: sub.plans.features
-          } : null
+          startDate: sub.startDate,
+          endDate: sub.endDate,
+          createdAt: sub.createdAt,
+          plan: {
+            id: sub.planId._id,
+            name: sub.planId.name,
+            duration: sub.planId.duration,
+            price: sub.planId.price,
+            features: sub.planId.features
+          }
         };
       }
 
       return {
-        id: payment.id,
-        userId: payment.user_id,
-        subscriptionId: payment.subscription_id,
-        amount: parseFloat(payment.amount),
+        id: payment._id,
+        userId: payment.userId,
+        subscriptionId: payment.subscriptionId?._id,
+        amount: payment.amount,
         currency: payment.currency,
         status: payment.status,
-        stripePaymentIntentId: payment.stripe_payment_intent_id,
-        paymentMethod: payment.payment_method,
-        createdAt: payment.created_at,
+        stripePaymentIntentId: payment.stripePaymentIntentId,
+        paymentMethod: payment.paymentMethod,
+        createdAt: payment.createdAt,
         subscription: subscriptionData
       };
     });
