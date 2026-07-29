@@ -37,9 +37,18 @@ const Register = () => {
   return (
     <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-primary-50 to-primary-100 py-12">
       <div className="card max-w-md w-full">
-        <h2 className="text-3xl font-bold text-center text-gray-800 mb-6">
-          Create Account
-        </h2>
+        <div className="text-center mb-6">
+          <Link to="/home" className="inline-block mb-4">
+            <div className="inline-flex items-center justify-center w-12 h-12 bg-gradient-to-br from-blue-600 to-purple-600 rounded-xl">
+              <svg className="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
+              </svg>
+            </div>
+          </Link>
+          <h2 className="text-3xl font-bold text-gray-800">
+            Create Account
+          </h2>
+        </div>
         <form onSubmit={handleSubmit} className="space-y-4">
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">
