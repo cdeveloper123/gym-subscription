@@ -3,7 +3,8 @@ const cors = require('cors');
 const morgan = require('morgan');
 require('dotenv').config();
 
-const { initializeStorage } = require('./lib/storage');
+const { testConnection } = require('./config/database');
+const { seedDatabase } = require('./config/seed');
 const authRoutes = require('./routes/auth.routes');
 const userRoutes = require('./routes/user.routes');
 const planRoutes = require('./routes/plan.routes');
@@ -49,12 +50,28 @@ app.use((req, res) => {
 // Error handling middleware
 app.use(errorHandler);
 
-// Initialize storage and start server
-initializeStorage();
+// Initialize database and start server
+const initializeServer = async () => {
+  try {
+    const connected = await testConnection();
 
-app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
-  console.log(`Environment: ${process.env.NODE_ENV}`);
-});
+    if (!connected) {
+      console.error('Failed to connect to database. Please check your database configuration.');
+      process.exit(1);
+    }
+
+    await seedDatabase();
+
+    app.listen(PORT, () => {
+      console.log(`Server running on port ${PORT}`);
+      console.log(`Environment: ${process.env.NODE_ENV}`);
+    });
+  } catch (error) {
+    console.error('Failed to initialize server:', error);
+    process.exit(1);
+  }
+};
+
+initializeServer();
 
 module.exports = app;

@@ -1,27 +1,67 @@
-const { storage, generateId } = require('../lib/storage');
+const { query } = require('../config/database');
+
+const generateId = () => {
+  try {
+    return require('crypto').randomUUID();
+  } catch {
+    return Math.random().toString(36).substr(2, 9) + Math.random().toString(36).substr(2, 9);
+  }
+};
 
 const getMySubscription = async (req, res, next) => {
   try {
-    const subscription = storage.subscriptions
-      .filter(s => s.userId === req.user.id && s.status === 'ACTIVE')
-      .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))[0];
+    const subscriptions = await query(
+      `SELECT s.*, p.name as plan_name, p.duration, p.price, p.features
+       FROM subscriptions s
+       LEFT JOIN plans p ON s.plan_id = p.id
+       WHERE s.user_id = ? AND s.status = 'ACTIVE'
+       ORDER BY s.created_at DESC
+       LIMIT 1`,
+      [req.user.id]
+    );
 
-    if (subscription) {
-      const plan = storage.plans.find(p => p.id === subscription.planId);
-      const payments = storage.payments
-        .filter(p => p.subscriptionId === subscription.id)
-        .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
-
-      const subscriptionResponse = {
-        ...subscription,
-        plan,
-        payments
-      };
-
-      res.json({ subscription: subscriptionResponse });
-    } else {
-      res.json({ subscription: null });
+    if (subscriptions.length === 0) {
+      return res.json({ subscription: null });
     }
+
+    const sub = subscriptions[0];
+
+    const payments = await query(
+      'SELECT * FROM payments WHERE subscription_id = ? ORDER BY created_at DESC',
+      [sub.id]
+    );
+
+    const subscription = {
+      id: sub.id,
+      userId: sub.user_id,
+      planId: sub.plan_id,
+      status: sub.status,
+      startDate: sub.start_date,
+      endDate: sub.end_date,
+      stripeSubscriptionId: sub.stripe_subscription_id,
+      createdAt: sub.created_at,
+      updatedAt: sub.updated_at,
+      plan: {
+        id: sub.plan_id,
+        name: sub.plan_name,
+        duration: sub.duration,
+        price: parseFloat(sub.price),
+        features: typeof sub.features === 'string' ? JSON.parse(sub.features) : sub.features
+      },
+      payments: payments.map(p => ({
+        id: p.id,
+        userId: p.user_id,
+        subscriptionId: p.subscription_id,
+        amount: parseFloat(p.amount),
+        currency: p.currency,
+        status: p.status,
+        stripePaymentIntentId: p.stripe_payment_intent_id,
+        paymentMethod: p.payment_method,
+        createdAt: p.created_at
+      }))
+    };
+
+    res.json({ subscription });
   } catch (error) {
     next(error);
   }
@@ -29,19 +69,53 @@ const getMySubscription = async (req, res, next) => {
 
 const getSubscriptionHistory = async (req, res, next) => {
   try {
-    const subscriptions = storage.subscriptions
-      .filter(s => s.userId === req.user.id)
-      .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+    const subscriptions = await query(
+      `SELECT s.*, p.name as plan_name, p.duration, p.price, p.features
+       FROM subscriptions s
+       LEFT JOIN plans p ON s.plan_id = p.id
+       WHERE s.user_id = ?
+       ORDER BY s.created_at DESC`,
+      [req.user.id]
+    );
 
-    const subscriptionsResponse = subscriptions.map(sub => {
-      const plan = storage.plans.find(p => p.id === sub.planId);
-      const payments = storage.payments.filter(p => p.subscriptionId === sub.id);
-      return {
-        ...sub,
-        plan,
-        payments
-      };
-    });
+    const subscriptionsResponse = await Promise.all(
+      subscriptions.map(async (sub) => {
+        const payments = await query(
+          'SELECT * FROM payments WHERE subscription_id = ?',
+          [sub.id]
+        );
+
+        return {
+          id: sub.id,
+          userId: sub.user_id,
+          planId: sub.plan_id,
+          status: sub.status,
+          startDate: sub.start_date,
+          endDate: sub.end_date,
+          stripeSubscriptionId: sub.stripe_subscription_id,
+          createdAt: sub.created_at,
+          updatedAt: sub.updated_at,
+          plan: {
+            id: sub.plan_id,
+            name: sub.plan_name,
+            duration: sub.duration,
+            price: parseFloat(sub.price),
+            features: typeof sub.features === 'string' ? JSON.parse(sub.features) : sub.features
+          },
+          payments: payments.map(p => ({
+            id: p.id,
+            userId: p.user_id,
+            subscriptionId: p.subscription_id,
+            amount: parseFloat(p.amount),
+            currency: p.currency,
+            status: p.status,
+            stripePaymentIntentId: p.stripe_payment_intent_id,
+            paymentMethod: p.payment_method,
+            createdAt: p.created_at
+          }))
+        };
+      })
+    );
 
     res.json({ subscriptions: subscriptionsResponse });
   } catch (error) {
@@ -57,17 +131,24 @@ const purchaseSubscription = async (req, res, next) => {
       return res.status(400).json({ error: 'Payment intent ID is required' });
     }
 
-    const plan = storage.plans.find(p => p.id === planId);
+    const plans = await query('SELECT * FROM plans WHERE id = ? AND is_active = TRUE', [planId]);
 
-    if (!plan || !plan.isActive) {
+    if (plans.length === 0) {
       return res.status(404).json({ error: 'Plan not found or inactive' });
     }
 
-    const payment = storage.payments.find(p => p.paymentProviderId === paymentIntentId);
+    const plan = plans[0];
 
-    if (!payment) {
+    const payments = await query(
+      'SELECT * FROM payments WHERE stripe_payment_intent_id = ?',
+      [paymentIntentId]
+    );
+
+    if (payments.length === 0) {
       return res.status(400).json({ error: 'Payment not found' });
     }
+
+    const payment = payments[0];
 
     if (payment.status === 'FAILED') {
       return res.status(400).json({ error: 'Payment failed' });
@@ -77,19 +158,20 @@ const purchaseSubscription = async (req, res, next) => {
       return res.status(402).json({ error: 'Payment not completed' });
     }
 
-    if (payment.userId !== req.user.id) {
+    if (payment.user_id !== req.user.id) {
       return res.status(403).json({ error: 'Payment does not belong to this user' });
     }
 
-    if (payment.subscriptionId) {
+    if (payment.subscription_id) {
       return res.status(400).json({ error: 'Payment already used for a subscription' });
     }
 
-    const existingActive = storage.subscriptions.find(s =>
-      s.userId === req.user.id && s.status === 'ACTIVE'
+    const existingActive = await query(
+      'SELECT id FROM subscriptions WHERE user_id = ? AND status = \'ACTIVE\'',
+      [req.user.id]
     );
 
-    if (existingActive) {
+    if (existingActive.length > 0) {
       return res.status(400).json({ error: 'You already have an active subscription' });
     }
 
@@ -108,30 +190,40 @@ const purchaseSubscription = async (req, res, next) => {
         break;
     }
 
-    const subscription = {
-      id: generateId(),
-      userId: req.user.id,
-      planId: plan.id,
-      status: 'ACTIVE',
-      startDate,
-      endDate,
-      createdAt: new Date(),
-      updatedAt: new Date()
-    };
+    const subscriptionId = generateId();
 
-    storage.subscriptions.push(subscription);
+    await query(
+      'INSERT INTO subscriptions (id, user_id, plan_id, status, start_date, end_date) VALUES (?, ?, ?, ?, ?, ?)',
+      [subscriptionId, req.user.id, plan.id, 'ACTIVE', startDate, endDate]
+    );
 
-    payment.subscriptionId = subscription.id;
-    payment.updatedAt = new Date();
+    await query(
+      'UPDATE payments SET subscription_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
+      [subscriptionId, payment.id]
+    );
 
-    const subscriptionResponse = {
-      ...subscription,
-      plan
-    };
+    const newSubscriptions = await query('SELECT * FROM subscriptions WHERE id = ?', [subscriptionId]);
+    const subscription = newSubscriptions[0];
 
     res.status(201).json({
       message: 'Subscription purchased successfully',
-      subscription: subscriptionResponse
+      subscription: {
+        id: subscription.id,
+        userId: subscription.user_id,
+        planId: subscription.plan_id,
+        status: subscription.status,
+        startDate: subscription.start_date,
+        endDate: subscription.end_date,
+        createdAt: subscription.created_at,
+        updatedAt: subscription.updated_at,
+        plan: {
+          id: plan.id,
+          name: plan.name,
+          duration: plan.duration,
+          price: parseFloat(plan.price),
+          features: typeof plan.features === 'string' ? JSON.parse(plan.features) : plan.features
+        }
+      }
     });
   } catch (error) {
     next(error);
@@ -146,20 +238,30 @@ const renewSubscription = async (req, res, next) => {
       return res.status(400).json({ error: 'Payment intent ID is required' });
     }
 
-    const subscriptionIndex = storage.subscriptions.findIndex(s => s.id === subscriptionId);
+    const subscriptions = await query(
+      'SELECT * FROM subscriptions WHERE id = ? AND user_id = ?',
+      [subscriptionId, req.user.id]
+    );
 
-    if (subscriptionIndex === -1 || storage.subscriptions[subscriptionIndex].userId !== req.user.id) {
+    if (subscriptions.length === 0) {
       return res.status(404).json({ error: 'Subscription not found' });
     }
 
-    const subscription = storage.subscriptions[subscriptionIndex];
-    const plan = storage.plans.find(p => p.id === subscription.planId);
+    const subscription = subscriptions[0];
 
-    const payment = storage.payments.find(p => p.paymentProviderId === paymentIntentId);
+    const plans = await query('SELECT * FROM plans WHERE id = ?', [subscription.plan_id]);
+    const plan = plans[0];
 
-    if (!payment) {
+    const payments = await query(
+      'SELECT * FROM payments WHERE stripe_payment_intent_id = ?',
+      [paymentIntentId]
+    );
+
+    if (payments.length === 0) {
       return res.status(400).json({ error: 'Payment not found' });
     }
+
+    const payment = payments[0];
 
     if (payment.status === 'FAILED') {
       return res.status(400).json({ error: 'Payment failed' });
@@ -169,11 +271,11 @@ const renewSubscription = async (req, res, next) => {
       return res.status(402).json({ error: 'Payment not completed' });
     }
 
-    if (payment.userId !== req.user.id) {
+    if (payment.user_id !== req.user.id) {
       return res.status(403).json({ error: 'Payment does not belong to this user' });
     }
 
-    if (payment.subscriptionId && payment.subscriptionId !== subscriptionId) {
+    if (payment.subscription_id && payment.subscription_id !== subscriptionId) {
       return res.status(400).json({ error: 'Payment already used for a different subscription' });
     }
 
@@ -192,24 +294,40 @@ const renewSubscription = async (req, res, next) => {
         break;
     }
 
-    subscription.status = 'ACTIVE';
-    subscription.startDate = startDate;
-    subscription.endDate = endDate;
-    subscription.updatedAt = new Date();
+    await query(
+      'UPDATE subscriptions SET status = ?, start_date = ?, end_date = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
+      ['ACTIVE', startDate, endDate, subscriptionId]
+    );
 
-    if (!payment.subscriptionId) {
-      payment.subscriptionId = subscription.id;
-      payment.updatedAt = new Date();
+    if (!payment.subscription_id) {
+      await query(
+        'UPDATE payments SET subscription_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
+        [subscriptionId, payment.id]
+      );
     }
 
-    const subscriptionResponse = {
-      ...subscription,
-      plan
-    };
+    const updatedSubscriptions = await query('SELECT * FROM subscriptions WHERE id = ?', [subscriptionId]);
+    const updatedSubscription = updatedSubscriptions[0];
 
     res.json({
       message: 'Subscription renewed successfully',
-      subscription: subscriptionResponse
+      subscription: {
+        id: updatedSubscription.id,
+        userId: updatedSubscription.user_id,
+        planId: updatedSubscription.plan_id,
+        status: updatedSubscription.status,
+        startDate: updatedSubscription.start_date,
+        endDate: updatedSubscription.end_date,
+        createdAt: updatedSubscription.created_at,
+        updatedAt: updatedSubscription.updated_at,
+        plan: {
+          id: plan.id,
+          name: plan.name,
+          duration: plan.duration,
+          price: parseFloat(plan.price),
+          features: typeof plan.features === 'string' ? JSON.parse(plan.features) : plan.features
+        }
+      }
     });
   } catch (error) {
     next(error);
@@ -220,18 +338,35 @@ const cancelSubscription = async (req, res, next) => {
   try {
     const { subscriptionId } = req.body;
 
-    const subscription = storage.subscriptions.find(s => s.id === subscriptionId);
+    const subscriptions = await query(
+      'SELECT * FROM subscriptions WHERE id = ? AND user_id = ?',
+      [subscriptionId, req.user.id]
+    );
 
-    if (!subscription || subscription.userId !== req.user.id) {
+    if (subscriptions.length === 0) {
       return res.status(404).json({ error: 'Subscription not found' });
     }
 
-    subscription.status = 'CANCELLED';
-    subscription.updatedAt = new Date();
+    await query(
+      'UPDATE subscriptions SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
+      ['CANCELLED', subscriptionId]
+    );
+
+    const updatedSubscriptions = await query('SELECT * FROM subscriptions WHERE id = ?', [subscriptionId]);
+    const subscription = updatedSubscriptions[0];
 
     res.json({
       message: 'Subscription cancelled successfully',
-      subscription
+      subscription: {
+        id: subscription.id,
+        userId: subscription.user_id,
+        planId: subscription.plan_id,
+        status: subscription.status,
+        startDate: subscription.start_date,
+        endDate: subscription.end_date,
+        createdAt: subscription.created_at,
+        updatedAt: subscription.updated_at
+      }
     });
   } catch (error) {
     next(error);

@@ -1,40 +1,75 @@
-const { storage } = require('../lib/storage');
+const { query } = require('../config/database');
 const bcrypt = require('bcryptjs');
 
 const getProfile = async (req, res, next) => {
   try {
-    const user = storage.users.find(u => u.id === req.user.id);
+    const users = await query('SELECT id, email, name, phone, address, role, created_at FROM users WHERE id = ?', [req.user.id]);
 
-    if (!user) {
+    if (users.length === 0) {
       return res.status(404).json({ error: 'User not found' });
     }
 
-    const subscriptions = storage.subscriptions
-      .filter(s => s.userId === user.id)
-      .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+    const user = users[0];
 
-    const subscriptionsWithPayments = subscriptions.map(sub => {
-      const plan = storage.plans.find(p => p.id === sub.planId);
-      const payments = storage.payments.filter(p => p.subscriptionId === sub.id);
-      return {
-        ...sub,
-        plan,
-        payments
-      };
+    const subscriptions = await query(
+      `SELECT s.*, p.name as plan_name, p.duration, p.price, p.features
+       FROM subscriptions s
+       LEFT JOIN plans p ON s.plan_id = p.id
+       WHERE s.user_id = ?
+       ORDER BY s.created_at DESC`,
+      [user.id]
+    );
+
+    const subscriptionsWithPayments = await Promise.all(
+      subscriptions.map(async (sub) => {
+        const payments = await query(
+          'SELECT * FROM payments WHERE subscription_id = ?',
+          [sub.id]
+        );
+
+        return {
+          id: sub.id,
+          userId: sub.user_id,
+          planId: sub.plan_id,
+          status: sub.status,
+          startDate: sub.start_date,
+          endDate: sub.end_date,
+          stripeSubscriptionId: sub.stripe_subscription_id,
+          createdAt: sub.created_at,
+          plan: {
+            id: sub.plan_id,
+            name: sub.plan_name,
+            duration: sub.duration,
+            price: parseFloat(sub.price),
+            features: typeof sub.features === 'string' ? JSON.parse(sub.features) : sub.features
+          },
+          payments: payments.map(p => ({
+            id: p.id,
+            userId: p.user_id,
+            subscriptionId: p.subscription_id,
+            amount: parseFloat(p.amount),
+            currency: p.currency,
+            status: p.status,
+            stripePaymentIntentId: p.stripe_payment_intent_id,
+            paymentMethod: p.payment_method,
+            createdAt: p.created_at
+          }))
+        };
+      })
+    );
+
+    res.json({
+      user: {
+        id: user.id,
+        email: user.email,
+        name: user.name,
+        phone: user.phone,
+        address: user.address,
+        role: user.role,
+        createdAt: user.created_at,
+        subscriptions: subscriptionsWithPayments
+      }
     });
-
-    const userResponse = {
-      id: user.id,
-      email: user.email,
-      name: user.name,
-      phone: user.phone,
-      address: user.address,
-      role: user.role,
-      createdAt: user.createdAt,
-      subscriptions: subscriptionsWithPayments
-    };
-
-    res.json({ user: userResponse });
   } catch (error) {
     next(error);
   }
@@ -44,13 +79,15 @@ const updateProfile = async (req, res, next) => {
   try {
     const { name, phone, address, currentPassword, newPassword } = req.body;
 
-    const userIndex = storage.users.findIndex(u => u.id === req.user.id);
+    const users = await query('SELECT * FROM users WHERE id = ?', [req.user.id]);
 
-    if (userIndex === -1) {
+    if (users.length === 0) {
       return res.status(404).json({ error: 'User not found' });
     }
 
-    const user = storage.users[userIndex];
+    const user = users[0];
+    const updates = [];
+    const values = [];
 
     if (newPassword) {
       if (!currentPassword) {
@@ -63,27 +100,52 @@ const updateProfile = async (req, res, next) => {
         return res.status(400).json({ error: 'Current password is incorrect' });
       }
 
-      user.password = await bcrypt.hash(newPassword, 10);
+      const hashedPassword = await bcrypt.hash(newPassword, 10);
+      updates.push('password = ?');
+      values.push(hashedPassword);
     }
 
-    if (name) user.name = name;
-    if (phone) user.phone = phone;
-    if (address) user.address = address;
-    user.updatedAt = new Date();
+    if (name) {
+      updates.push('name = ?');
+      values.push(name);
+    }
 
-    const userResponse = {
-      id: user.id,
-      email: user.email,
-      name: user.name,
-      phone: user.phone,
-      address: user.address,
-      role: user.role,
-      updatedAt: user.updatedAt
-    };
+    if (phone) {
+      updates.push('phone = ?');
+      values.push(phone);
+    }
+
+    if (address) {
+      updates.push('address = ?');
+      values.push(address);
+    }
+
+    if (updates.length > 0) {
+      values.push(req.user.id);
+      await query(
+        `UPDATE users SET ${updates.join(', ')}, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+        values
+      );
+    }
+
+    const updatedUsers = await query(
+      'SELECT id, email, name, phone, address, role, updated_at FROM users WHERE id = ?',
+      [req.user.id]
+    );
+
+    const updatedUser = updatedUsers[0];
 
     res.json({
       message: 'Profile updated successfully',
-      user: userResponse
+      user: {
+        id: updatedUser.id,
+        email: updatedUser.email,
+        name: updatedUser.name,
+        phone: updatedUser.phone,
+        address: updatedUser.address,
+        role: updatedUser.role,
+        updatedAt: updatedUser.updated_at
+      }
     });
   } catch (error) {
     next(error);

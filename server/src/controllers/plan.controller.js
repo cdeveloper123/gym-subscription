@@ -1,18 +1,39 @@
-const { storage, generateId } = require('../lib/storage');
+const { query } = require('../config/database');
+
+const generateId = () => {
+  try {
+    return require('crypto').randomUUID();
+  } catch {
+    return Math.random().toString(36).substr(2, 9) + Math.random().toString(36).substr(2, 9);
+  }
+};
 
 const getAllPlans = async (req, res, next) => {
   try {
     const { includeInactive } = req.query;
 
-    let plans = storage.plans;
+    let sql = 'SELECT * FROM plans';
 
     if (includeInactive !== 'true') {
-      plans = plans.filter(p => p.isActive);
+      sql += ' WHERE is_active = TRUE';
     }
 
-    plans = plans.sort((a, b) => a.price - b.price);
+    sql += ' ORDER BY price ASC';
 
-    res.json({ plans });
+    const plans = await query(sql);
+
+    const formattedPlans = plans.map(plan => ({
+      id: plan.id,
+      name: plan.name,
+      duration: plan.duration,
+      price: parseFloat(plan.price),
+      features: typeof plan.features === 'string' ? JSON.parse(plan.features) : plan.features,
+      isActive: plan.is_active,
+      createdAt: plan.created_at,
+      updatedAt: plan.updated_at
+    }));
+
+    res.json({ plans: formattedPlans });
   } catch (error) {
     next(error);
   }
@@ -22,13 +43,26 @@ const getPlanById = async (req, res, next) => {
   try {
     const { id } = req.params;
 
-    const plan = storage.plans.find(p => p.id === id);
+    const plans = await query('SELECT * FROM plans WHERE id = ?', [id]);
 
-    if (!plan) {
+    if (plans.length === 0) {
       return res.status(404).json({ error: 'Plan not found' });
     }
 
-    res.json({ plan });
+    const plan = plans[0];
+
+    res.json({
+      plan: {
+        id: plan.id,
+        name: plan.name,
+        duration: plan.duration,
+        price: parseFloat(plan.price),
+        features: typeof plan.features === 'string' ? JSON.parse(plan.features) : plan.features,
+        isActive: plan.is_active,
+        createdAt: plan.created_at,
+        updatedAt: plan.updated_at
+      }
+    });
   } catch (error) {
     next(error);
   }
@@ -38,22 +72,30 @@ const createPlan = async (req, res, next) => {
   try {
     const { name, duration, price, features, isActive } = req.body;
 
-    const plan = {
-      id: generateId(),
-      name,
-      duration,
-      price: parseFloat(price),
-      features: features || [],
-      isActive: isActive !== undefined ? isActive : true,
-      createdAt: new Date(),
-      updatedAt: new Date()
-    };
+    const planId = generateId();
+    const featuresJson = JSON.stringify(features || []);
+    const active = isActive !== undefined ? isActive : true;
 
-    storage.plans.push(plan);
+    await query(
+      'INSERT INTO plans (id, name, duration, price, features, is_active) VALUES (?, ?, ?, ?, ?, ?)',
+      [planId, name, duration, price, featuresJson, active]
+    );
+
+    const plans = await query('SELECT * FROM plans WHERE id = ?', [planId]);
+    const plan = plans[0];
 
     res.status(201).json({
       message: 'Plan created successfully',
-      plan
+      plan: {
+        id: plan.id,
+        name: plan.name,
+        duration: plan.duration,
+        price: parseFloat(plan.price),
+        features: typeof plan.features === 'string' ? JSON.parse(plan.features) : plan.features,
+        isActive: plan.is_active,
+        createdAt: plan.created_at,
+        updatedAt: plan.updated_at
+      }
     });
   } catch (error) {
     next(error);
@@ -65,24 +107,63 @@ const updatePlan = async (req, res, next) => {
     const { id } = req.params;
     const { name, duration, price, features, isActive } = req.body;
 
-    const planIndex = storage.plans.findIndex(p => p.id === id);
+    const existingPlans = await query('SELECT * FROM plans WHERE id = ?', [id]);
 
-    if (planIndex === -1) {
+    if (existingPlans.length === 0) {
       return res.status(404).json({ error: 'Plan not found' });
     }
 
-    const plan = storage.plans[planIndex];
+    const updates = [];
+    const values = [];
 
-    if (name) plan.name = name;
-    if (duration) plan.duration = duration;
-    if (price) plan.price = parseFloat(price);
-    if (features) plan.features = features;
-    if (isActive !== undefined) plan.isActive = isActive;
-    plan.updatedAt = new Date();
+    if (name) {
+      updates.push('name = ?');
+      values.push(name);
+    }
+
+    if (duration) {
+      updates.push('duration = ?');
+      values.push(duration);
+    }
+
+    if (price) {
+      updates.push('price = ?');
+      values.push(price);
+    }
+
+    if (features) {
+      updates.push('features = ?');
+      values.push(JSON.stringify(features));
+    }
+
+    if (isActive !== undefined) {
+      updates.push('is_active = ?');
+      values.push(isActive);
+    }
+
+    if (updates.length > 0) {
+      values.push(id);
+      await query(
+        `UPDATE plans SET ${updates.join(', ')}, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+        values
+      );
+    }
+
+    const updatedPlans = await query('SELECT * FROM plans WHERE id = ?', [id]);
+    const plan = updatedPlans[0];
 
     res.json({
       message: 'Plan updated successfully',
-      plan
+      plan: {
+        id: plan.id,
+        name: plan.name,
+        duration: plan.duration,
+        price: parseFloat(plan.price),
+        features: typeof plan.features === 'string' ? JSON.parse(plan.features) : plan.features,
+        isActive: plan.is_active,
+        createdAt: plan.created_at,
+        updatedAt: plan.updated_at
+      }
     });
   } catch (error) {
     next(error);
@@ -93,14 +174,13 @@ const deletePlan = async (req, res, next) => {
   try {
     const { id } = req.params;
 
-    const plan = storage.plans.find(p => p.id === id);
+    const plans = await query('SELECT * FROM plans WHERE id = ?', [id]);
 
-    if (!plan) {
+    if (plans.length === 0) {
       return res.status(404).json({ error: 'Plan not found' });
     }
 
-    plan.isActive = false;
-    plan.updatedAt = new Date();
+    await query('UPDATE plans SET is_active = FALSE, updated_at = CURRENT_TIMESTAMP WHERE id = ?', [id]);
 
     res.json({ message: 'Plan deactivated successfully' });
   } catch (error) {
