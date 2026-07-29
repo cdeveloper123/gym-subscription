@@ -3,8 +3,7 @@ const cors = require('cors');
 const morgan = require('morgan');
 require('dotenv').config();
 
-const connectDB = require('./config/mongodb');
-const seedDatabase = require('./config/seedMongo');
+const seedDatabase = require('./config/seedSupabase');
 const { startCronJobs } = require('./jobs/cronJobs');
 const authRoutes = require('./routes/auth.routes');
 const userRoutes = require('./routes/user.routes');
@@ -54,8 +53,6 @@ app.use(errorHandler);
 // Initialize database and start server
 const initializeServer = async () => {
   try {
-    await connectDB();
-
     await seedDatabase();
 
     // Start cron jobs
