@@ -3,8 +3,8 @@ const cors = require('cors');
 const morgan = require('morgan');
 require('dotenv').config();
 
-const { testConnection } = require('./config/database');
-const { seedDatabase } = require('./config/seed');
+const connectDB = require('./config/mongodb');
+const seedDatabase = require('./config/seedMongo');
 const { startCronJobs } = require('./jobs/cronJobs');
 const authRoutes = require('./routes/auth.routes');
 const userRoutes = require('./routes/user.routes');
@@ -54,12 +54,7 @@ app.use(errorHandler);
 // Initialize database and start server
 const initializeServer = async () => {
   try {
-    const connected = await testConnection();
-
-    if (!connected) {
-      console.error('Failed to connect to database. Please check your database configuration.');
-      process.exit(1);
-    }
+    await connectDB();
 
     await seedDatabase();
 

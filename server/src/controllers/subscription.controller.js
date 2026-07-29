@@ -1,67 +1,53 @@
-const { query } = require('../config/database');
-
-const generateId = () => {
-  try {
-    return require('crypto').randomUUID();
-  } catch {
-    return Math.random().toString(36).substr(2, 9) + Math.random().toString(36).substr(2, 9);
-  }
-};
+const Subscription = require('../models/Subscription');
+const Plan = require('../models/Plan');
+const Payment = require('../models/Payment');
 
 const getMySubscription = async (req, res, next) => {
   try {
-    const subscriptions = await query(
-      `SELECT s.*, p.name as plan_name, p.duration, p.price, p.features
-       FROM subscriptions s
-       LEFT JOIN plans p ON s.plan_id = p.id
-       WHERE s.user_id = ? AND s.status = 'ACTIVE'
-       ORDER BY s.created_at DESC
-       LIMIT 1`,
-      [req.user.id]
-    );
+    const subscription = await Subscription.findOne({
+      userId: req.user.id,
+      status: 'ACTIVE'
+    })
+      .populate('planId')
+      .sort({ createdAt: -1 });
 
-    if (subscriptions.length === 0) {
+    if (!subscription) {
       return res.json({ subscription: null });
     }
 
-    const sub = subscriptions[0];
+    const payments = await Payment.find({ subscriptionId: subscription._id }).sort({ createdAt: -1 });
 
-    const payments = await query(
-      'SELECT * FROM payments WHERE subscription_id = ? ORDER BY created_at DESC',
-      [sub.id]
-    );
-
-    const subscription = {
-      id: sub.id,
-      userId: sub.user_id,
-      planId: sub.plan_id,
-      status: sub.status,
-      startDate: sub.start_date,
-      endDate: sub.end_date,
-      stripeSubscriptionId: sub.stripe_subscription_id,
-      createdAt: sub.created_at,
-      updatedAt: sub.updated_at,
-      plan: {
-        id: sub.plan_id,
-        name: sub.plan_name,
-        duration: sub.duration,
-        price: parseFloat(sub.price),
-        features: typeof sub.features === 'string' ? JSON.parse(sub.features) : sub.features
-      },
-      payments: payments.map(p => ({
-        id: p.id,
-        userId: p.user_id,
-        subscriptionId: p.subscription_id,
-        amount: parseFloat(p.amount),
-        currency: p.currency,
-        status: p.status,
-        stripePaymentIntentId: p.stripe_payment_intent_id,
-        paymentMethod: p.payment_method,
-        createdAt: p.created_at
-      }))
-    };
-
-    res.json({ subscription });
+    res.json({
+      subscription: {
+        id: subscription._id,
+        userId: subscription.userId,
+        planId: subscription.planId._id,
+        status: subscription.status,
+        startDate: subscription.startDate,
+        endDate: subscription.endDate,
+        stripeSubscriptionId: subscription.stripeSubscriptionId,
+        createdAt: subscription.createdAt,
+        updatedAt: subscription.updatedAt,
+        plan: {
+          id: subscription.planId._id,
+          name: subscription.planId.name,
+          duration: subscription.planId.duration,
+          price: subscription.planId.price,
+          features: subscription.planId.features
+        },
+        payments: payments.map(p => ({
+          id: p._id,
+          userId: p.userId,
+          subscriptionId: p.subscriptionId,
+          amount: p.amount,
+          currency: p.currency,
+          status: p.status,
+          stripePaymentIntentId: p.stripePaymentIntentId,
+          paymentMethod: p.paymentMethod,
+          createdAt: p.createdAt
+        }))
+      }
+    });
   } catch (error) {
     next(error);
   }
@@ -69,49 +55,41 @@ const getMySubscription = async (req, res, next) => {
 
 const getSubscriptionHistory = async (req, res, next) => {
   try {
-    const subscriptions = await query(
-      `SELECT s.*, p.name as plan_name, p.duration, p.price, p.features
-       FROM subscriptions s
-       LEFT JOIN plans p ON s.plan_id = p.id
-       WHERE s.user_id = ?
-       ORDER BY s.created_at DESC`,
-      [req.user.id]
-    );
+    const subscriptions = await Subscription.find({ userId: req.user.id })
+      .populate('planId')
+      .sort({ createdAt: -1 });
 
     const subscriptionsResponse = await Promise.all(
       subscriptions.map(async (sub) => {
-        const payments = await query(
-          'SELECT * FROM payments WHERE subscription_id = ?',
-          [sub.id]
-        );
+        const payments = await Payment.find({ subscriptionId: sub._id });
 
         return {
-          id: sub.id,
-          userId: sub.user_id,
-          planId: sub.plan_id,
+          id: sub._id,
+          userId: sub.userId,
+          planId: sub.planId._id,
           status: sub.status,
-          startDate: sub.start_date,
-          endDate: sub.end_date,
-          stripeSubscriptionId: sub.stripe_subscription_id,
-          createdAt: sub.created_at,
-          updatedAt: sub.updated_at,
+          startDate: sub.startDate,
+          endDate: sub.endDate,
+          stripeSubscriptionId: sub.stripeSubscriptionId,
+          createdAt: sub.createdAt,
+          updatedAt: sub.updatedAt,
           plan: {
-            id: sub.plan_id,
-            name: sub.plan_name,
-            duration: sub.duration,
-            price: parseFloat(sub.price),
-            features: typeof sub.features === 'string' ? JSON.parse(sub.features) : sub.features
+            id: sub.planId._id,
+            name: sub.planId.name,
+            duration: sub.planId.duration,
+            price: sub.planId.price,
+            features: sub.planId.features
           },
           payments: payments.map(p => ({
-            id: p.id,
-            userId: p.user_id,
-            subscriptionId: p.subscription_id,
-            amount: parseFloat(p.amount),
+            id: p._id,
+            userId: p.userId,
+            subscriptionId: p.subscriptionId,
+            amount: p.amount,
             currency: p.currency,
             status: p.status,
-            stripePaymentIntentId: p.stripe_payment_intent_id,
-            paymentMethod: p.payment_method,
-            createdAt: p.created_at
+            stripePaymentIntentId: p.stripePaymentIntentId,
+            paymentMethod: p.paymentMethod,
+            createdAt: p.createdAt
           }))
         };
       })
@@ -131,24 +109,17 @@ const purchaseSubscription = async (req, res, next) => {
       return res.status(400).json({ error: 'Payment intent ID is required' });
     }
 
-    const plans = await query('SELECT * FROM plans WHERE id = ? AND is_active = TRUE', [planId]);
+    const plan = await Plan.findById(planId);
 
-    if (plans.length === 0) {
+    if (!plan || !plan.isActive) {
       return res.status(404).json({ error: 'Plan not found or inactive' });
     }
 
-    const plan = plans[0];
+    const payment = await Payment.findOne({ stripePaymentIntentId: paymentIntentId });
 
-    const payments = await query(
-      'SELECT * FROM payments WHERE stripe_payment_intent_id = ?',
-      [paymentIntentId]
-    );
-
-    if (payments.length === 0) {
+    if (!payment) {
       return res.status(400).json({ error: 'Payment not found' });
     }
-
-    const payment = payments[0];
 
     if (payment.status === 'FAILED') {
       return res.status(400).json({ error: 'Payment failed' });
@@ -158,20 +129,20 @@ const purchaseSubscription = async (req, res, next) => {
       return res.status(402).json({ error: 'Payment not completed' });
     }
 
-    if (payment.user_id !== req.user.id) {
+    if (payment.userId.toString() !== req.user.id) {
       return res.status(403).json({ error: 'Payment does not belong to this user' });
     }
 
-    if (payment.subscription_id) {
+    if (payment.subscriptionId) {
       return res.status(400).json({ error: 'Payment already used for a subscription' });
     }
 
-    const existingActive = await query(
-      'SELECT id FROM subscriptions WHERE user_id = ? AND status = \'ACTIVE\'',
-      [req.user.id]
-    );
+    const existingActive = await Subscription.findOne({
+      userId: req.user.id,
+      status: 'ACTIVE'
+    });
 
-    if (existingActive.length > 0) {
+    if (existingActive) {
       return res.status(400).json({ error: 'You already have an active subscription' });
     }
 
@@ -190,38 +161,36 @@ const purchaseSubscription = async (req, res, next) => {
         break;
     }
 
-    const subscriptionId = generateId();
+    const subscription = await Subscription.create({
+      userId: req.user.id,
+      planId: plan._id,
+      status: 'ACTIVE',
+      startDate,
+      endDate
+    });
 
-    await query(
-      'INSERT INTO subscriptions (id, user_id, plan_id, status, start_date, end_date) VALUES (?, ?, ?, ?, ?, ?)',
-      [subscriptionId, req.user.id, plan.id, 'ACTIVE', startDate, endDate]
-    );
+    payment.subscriptionId = subscription._id;
+    await payment.save();
 
-    await query(
-      'UPDATE payments SET subscription_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
-      [subscriptionId, payment.id]
-    );
-
-    const newSubscriptions = await query('SELECT * FROM subscriptions WHERE id = ?', [subscriptionId]);
-    const subscription = newSubscriptions[0];
+    const populatedSubscription = await Subscription.findById(subscription._id).populate('planId');
 
     res.status(201).json({
       message: 'Subscription purchased successfully',
       subscription: {
-        id: subscription.id,
-        userId: subscription.user_id,
-        planId: subscription.plan_id,
-        status: subscription.status,
-        startDate: subscription.start_date,
-        endDate: subscription.end_date,
-        createdAt: subscription.created_at,
-        updatedAt: subscription.updated_at,
+        id: populatedSubscription._id,
+        userId: populatedSubscription.userId,
+        planId: populatedSubscription.planId._id,
+        status: populatedSubscription.status,
+        startDate: populatedSubscription.startDate,
+        endDate: populatedSubscription.endDate,
+        createdAt: populatedSubscription.createdAt,
+        updatedAt: populatedSubscription.updatedAt,
         plan: {
-          id: plan.id,
-          name: plan.name,
-          duration: plan.duration,
-          price: parseFloat(plan.price),
-          features: typeof plan.features === 'string' ? JSON.parse(plan.features) : plan.features
+          id: populatedSubscription.planId._id,
+          name: populatedSubscription.planId.name,
+          duration: populatedSubscription.planId.duration,
+          price: populatedSubscription.planId.price,
+          features: populatedSubscription.planId.features
         }
       }
     });
@@ -238,30 +207,20 @@ const renewSubscription = async (req, res, next) => {
       return res.status(400).json({ error: 'Payment intent ID is required' });
     }
 
-    const subscriptions = await query(
-      'SELECT * FROM subscriptions WHERE id = ? AND user_id = ?',
-      [subscriptionId, req.user.id]
-    );
+    const subscription = await Subscription.findOne({
+      _id: subscriptionId,
+      userId: req.user.id
+    }).populate('planId');
 
-    if (subscriptions.length === 0) {
+    if (!subscription) {
       return res.status(404).json({ error: 'Subscription not found' });
     }
 
-    const subscription = subscriptions[0];
+    const payment = await Payment.findOne({ stripePaymentIntentId: paymentIntentId });
 
-    const plans = await query('SELECT * FROM plans WHERE id = ?', [subscription.plan_id]);
-    const plan = plans[0];
-
-    const payments = await query(
-      'SELECT * FROM payments WHERE stripe_payment_intent_id = ?',
-      [paymentIntentId]
-    );
-
-    if (payments.length === 0) {
+    if (!payment) {
       return res.status(400).json({ error: 'Payment not found' });
     }
-
-    const payment = payments[0];
 
     if (payment.status === 'FAILED') {
       return res.status(400).json({ error: 'Payment failed' });
@@ -271,18 +230,18 @@ const renewSubscription = async (req, res, next) => {
       return res.status(402).json({ error: 'Payment not completed' });
     }
 
-    if (payment.user_id !== req.user.id) {
+    if (payment.userId.toString() !== req.user.id) {
       return res.status(403).json({ error: 'Payment does not belong to this user' });
     }
 
-    if (payment.subscription_id && payment.subscription_id !== subscriptionId) {
+    if (payment.subscriptionId && payment.subscriptionId.toString() !== subscriptionId) {
       return res.status(400).json({ error: 'Payment already used for a different subscription' });
     }
 
     const startDate = new Date();
     let endDate = new Date(startDate);
 
-    switch (plan.duration) {
+    switch (subscription.planId.duration) {
       case 'MONTHLY':
         endDate.setMonth(endDate.getMonth() + 1);
         break;
@@ -294,38 +253,33 @@ const renewSubscription = async (req, res, next) => {
         break;
     }
 
-    await query(
-      'UPDATE subscriptions SET status = ?, start_date = ?, end_date = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
-      ['ACTIVE', startDate, endDate, subscriptionId]
-    );
+    subscription.status = 'ACTIVE';
+    subscription.startDate = startDate;
+    subscription.endDate = endDate;
+    await subscription.save();
 
-    if (!payment.subscription_id) {
-      await query(
-        'UPDATE payments SET subscription_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
-        [subscriptionId, payment.id]
-      );
+    if (!payment.subscriptionId) {
+      payment.subscriptionId = subscription._id;
+      await payment.save();
     }
-
-    const updatedSubscriptions = await query('SELECT * FROM subscriptions WHERE id = ?', [subscriptionId]);
-    const updatedSubscription = updatedSubscriptions[0];
 
     res.json({
       message: 'Subscription renewed successfully',
       subscription: {
-        id: updatedSubscription.id,
-        userId: updatedSubscription.user_id,
-        planId: updatedSubscription.plan_id,
-        status: updatedSubscription.status,
-        startDate: updatedSubscription.start_date,
-        endDate: updatedSubscription.end_date,
-        createdAt: updatedSubscription.created_at,
-        updatedAt: updatedSubscription.updated_at,
+        id: subscription._id,
+        userId: subscription.userId,
+        planId: subscription.planId._id,
+        status: subscription.status,
+        startDate: subscription.startDate,
+        endDate: subscription.endDate,
+        createdAt: subscription.createdAt,
+        updatedAt: subscription.updatedAt,
         plan: {
-          id: plan.id,
-          name: plan.name,
-          duration: plan.duration,
-          price: parseFloat(plan.price),
-          features: typeof plan.features === 'string' ? JSON.parse(plan.features) : plan.features
+          id: subscription.planId._id,
+          name: subscription.planId.name,
+          duration: subscription.planId.duration,
+          price: subscription.planId.price,
+          features: subscription.planId.features
         }
       }
     });
@@ -338,34 +292,29 @@ const cancelSubscription = async (req, res, next) => {
   try {
     const { subscriptionId } = req.body;
 
-    const subscriptions = await query(
-      'SELECT * FROM subscriptions WHERE id = ? AND user_id = ?',
-      [subscriptionId, req.user.id]
-    );
+    const subscription = await Subscription.findOne({
+      _id: subscriptionId,
+      userId: req.user.id
+    });
 
-    if (subscriptions.length === 0) {
+    if (!subscription) {
       return res.status(404).json({ error: 'Subscription not found' });
     }
 
-    await query(
-      'UPDATE subscriptions SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
-      ['CANCELLED', subscriptionId]
-    );
-
-    const updatedSubscriptions = await query('SELECT * FROM subscriptions WHERE id = ?', [subscriptionId]);
-    const subscription = updatedSubscriptions[0];
+    subscription.status = 'CANCELLED';
+    await subscription.save();
 
     res.json({
       message: 'Subscription cancelled successfully',
       subscription: {
-        id: subscription.id,
-        userId: subscription.user_id,
-        planId: subscription.plan_id,
+        id: subscription._id,
+        userId: subscription.userId,
+        planId: subscription.planId,
         status: subscription.status,
-        startDate: subscription.start_date,
-        endDate: subscription.end_date,
-        createdAt: subscription.created_at,
-        updatedAt: subscription.updated_at
+        startDate: subscription.startDate,
+        endDate: subscription.endDate,
+        createdAt: subscription.createdAt,
+        updatedAt: subscription.updatedAt
       }
     });
   } catch (error) {
