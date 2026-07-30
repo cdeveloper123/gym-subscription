@@ -1,12 +1,11 @@
 const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
-const Payment = require('../models/Payment');
-const Plan = require('../models/Plan');
+const prisma = require('../config/prisma');
 
 const createPaymentIntent = async (req, res, next) => {
   try {
     const { planId } = req.body;
 
-    const plan = await Plan.findById(planId);
+    const plan = await prisma.plan.findUnique({ where: { id: planId } });
 
     if (!plan || !plan.isActive) {
       return res.status(404).json({ error: 'Plan not found or inactive' });
@@ -15,26 +14,21 @@ const createPaymentIntent = async (req, res, next) => {
     const paymentIntent = await stripe.paymentIntents.create({
       amount: Math.round(plan.price * 100),
       currency: 'usd',
-      metadata: {
+      metadata: { userId: req.user.id, planId: plan.id, planName: plan.name }
+    });
+
+    await prisma.payment.create({
+      data: {
         userId: req.user.id,
-        planId: plan._id.toString(),
-        planName: plan.name
+        amount: plan.price,
+        currency: 'USD',
+        status: 'PENDING',
+        stripePaymentIntentId: paymentIntent.id,
+        paymentMethod: 'card'
       }
     });
 
-    await Payment.create({
-      userId: req.user.id,
-      amount: plan.price,
-      currency: 'USD',
-      status: 'PENDING',
-      stripePaymentIntentId: paymentIntent.id,
-      paymentMethod: 'card'
-    });
-
-    res.json({
-      clientSecret: paymentIntent.client_secret,
-      paymentIntentId: paymentIntent.id
-    });
+    res.json({ clientSecret: paymentIntent.client_secret, paymentIntentId: paymentIntent.id });
   } catch (error) {
     next(error);
   }
@@ -73,83 +67,68 @@ const handleWebhook = async (req, res) => {
 };
 
 const handlePaymentSuccess = async (paymentIntent) => {
-  const { id, metadata } = paymentIntent;
-
-  await Payment.updateOne(
-    { stripePaymentIntentId: id },
-    { status: 'COMPLETED' }
-  );
-
-  console.log(`Payment ${id} completed for user ${metadata.userId}`);
+  await prisma.payment.updateMany({
+    where: { stripePaymentIntentId: paymentIntent.id },
+    data: { status: 'COMPLETED' }
+  });
+  console.log(`Payment ${paymentIntent.id} completed for user ${paymentIntent.metadata.userId}`);
 };
 
 const handlePaymentFailed = async (paymentIntent) => {
-  const { id } = paymentIntent;
-
-  await Payment.updateOne(
-    { stripePaymentIntentId: id },
-    { status: 'FAILED' }
-  );
-
-  console.log(`Payment ${id} failed`);
+  await prisma.payment.updateMany({
+    where: { stripePaymentIntentId: paymentIntent.id },
+    data: { status: 'FAILED' }
+  });
+  console.log(`Payment ${paymentIntent.id} failed`);
 };
 
 const getPaymentHistory = async (req, res, next) => {
   try {
-    const payments = await Payment.find({ userId: req.user.id })
-      .populate({
-        path: 'subscriptionId',
-        populate: {
-          path: 'planId'
+    const payments = await prisma.payment.findMany({
+      where: { userId: req.user.id },
+      include: {
+        subscription: {
+          include: { plan: true }
         }
-      })
-      .sort({ createdAt: -1 });
-
-    const paymentsResponse = payments.map(payment => {
-      let subscriptionData = null;
-
-      if (payment.subscriptionId) {
-        const sub = payment.subscriptionId;
-        subscriptionData = {
-          id: sub._id,
-          userId: sub.userId,
-          planId: sub.planId._id,
-          status: sub.status,
-          startDate: sub.startDate,
-          endDate: sub.endDate,
-          createdAt: sub.createdAt,
-          plan: {
-            id: sub.planId._id,
-            name: sub.planId.name,
-            duration: sub.planId.duration,
-            price: sub.planId.price,
-            features: sub.planId.features
-          }
-        };
-      }
-
-      return {
-        id: payment._id,
-        userId: payment.userId,
-        subscriptionId: payment.subscriptionId?._id,
-        amount: payment.amount,
-        currency: payment.currency,
-        status: payment.status,
-        stripePaymentIntentId: payment.stripePaymentIntentId,
-        paymentMethod: payment.paymentMethod,
-        createdAt: payment.createdAt,
-        subscription: subscriptionData
-      };
+      },
+      orderBy: { createdAt: 'desc' }
     });
 
-    res.json({ payments: paymentsResponse });
+    res.json({
+      payments: payments.map(payment => {
+        let subscriptionData = null;
+
+        if (payment.subscription) {
+          const sub = payment.subscription;
+          subscriptionData = {
+            id: sub.id,
+            userId: sub.userId,
+            planId: sub.planId,
+            status: sub.status,
+            startDate: sub.startDate,
+            endDate: sub.endDate,
+            createdAt: sub.createdAt,
+            plan: { id: sub.plan.id, name: sub.plan.name, duration: sub.plan.duration, price: sub.plan.price, features: sub.plan.features }
+          };
+        }
+
+        return {
+          id: payment.id,
+          userId: payment.userId,
+          subscriptionId: payment.subscriptionId,
+          amount: payment.amount,
+          currency: payment.currency,
+          status: payment.status,
+          stripePaymentIntentId: payment.stripePaymentIntentId,
+          paymentMethod: payment.paymentMethod,
+          createdAt: payment.createdAt,
+          subscription: subscriptionData
+        };
+      })
+    });
   } catch (error) {
     next(error);
   }
 };
 
-module.exports = {
-  createPaymentIntent,
-  handleWebhook,
-  getPaymentHistory
-};
+module.exports = { createPaymentIntent, handleWebhook, getPaymentHistory };

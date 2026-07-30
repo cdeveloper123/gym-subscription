@@ -1,42 +1,41 @@
 const bcrypt = require('bcryptjs');
-const User = require('../models/User');
-const Subscription = require('../models/Subscription');
-const Payment = require('../models/Payment');
+const prisma = require('../config/prisma');
 
 const getProfile = async (req, res, next) => {
   try {
-    const user = await User.findById(req.user.id).select('-password');
+    const user = await prisma.user.findUnique({ where: { id: req.user.id } });
 
     if (!user) {
       return res.status(404).json({ error: 'User not found' });
     }
 
-    const subscriptions = await Subscription.find({ userId: user._id })
-      .populate('planId')
-      .sort({ createdAt: -1 });
+    const subscriptions = await prisma.subscription.findMany({
+      where: { userId: user.id },
+      include: { plan: true, payments: true },
+      orderBy: { createdAt: 'desc' }
+    });
 
-    const subscriptionsWithPayments = await Promise.all(
-      subscriptions.map(async (sub) => {
-        const payments = await Payment.find({ subscriptionId: sub._id });
-
-        return {
-          id: sub._id,
+    res.json({
+      user: {
+        id: user.id,
+        email: user.email,
+        name: user.name,
+        phone: user.phone,
+        address: user.address,
+        role: user.role,
+        createdAt: user.createdAt,
+        subscriptions: subscriptions.map(sub => ({
+          id: sub.id,
           userId: sub.userId,
-          planId: sub.planId._id,
+          planId: sub.planId,
           status: sub.status,
           startDate: sub.startDate,
           endDate: sub.endDate,
           stripeSubscriptionId: sub.stripeSubscriptionId,
           createdAt: sub.createdAt,
-          plan: {
-            id: sub.planId._id,
-            name: sub.planId.name,
-            duration: sub.planId.duration,
-            price: sub.planId.price,
-            features: sub.planId.features
-          },
-          payments: payments.map(p => ({
-            id: p._id,
+          plan: { id: sub.plan.id, name: sub.plan.name, duration: sub.plan.duration, price: sub.plan.price, features: sub.plan.features },
+          payments: sub.payments.map(p => ({
+            id: p.id,
             userId: p.userId,
             subscriptionId: p.subscriptionId,
             amount: p.amount,
@@ -46,20 +45,7 @@ const getProfile = async (req, res, next) => {
             paymentMethod: p.paymentMethod,
             createdAt: p.createdAt
           }))
-        };
-      })
-    );
-
-    res.json({
-      user: {
-        id: user._id,
-        email: user.email,
-        name: user.name,
-        phone: user.phone,
-        address: user.address,
-        role: user.role,
-        createdAt: user.createdAt,
-        subscriptions: subscriptionsWithPayments
+        }))
       }
     });
   } catch (error) {
@@ -71,11 +57,13 @@ const updateProfile = async (req, res, next) => {
   try {
     const { name, phone, address, currentPassword, newPassword } = req.body;
 
-    const user = await User.findById(req.user.id);
+    const user = await prisma.user.findUnique({ where: { id: req.user.id } });
 
     if (!user) {
       return res.status(404).json({ error: 'User not found' });
     }
+
+    const data = {};
 
     if (newPassword) {
       if (!currentPassword) {
@@ -88,26 +76,18 @@ const updateProfile = async (req, res, next) => {
         return res.status(400).json({ error: 'Current password is incorrect' });
       }
 
-      user.password = await bcrypt.hash(newPassword, 10);
+      data.password = await bcrypt.hash(newPassword, 10);
     }
 
-    if (name) user.name = name;
-    if (phone) user.phone = phone;
-    if (address) user.address = address;
+    if (name) data.name = name;
+    if (phone) data.phone = phone;
+    if (address) data.address = address;
 
-    await user.save();
+    const updated = await prisma.user.update({ where: { id: user.id }, data });
 
     res.json({
       message: 'Profile updated successfully',
-      user: {
-        id: user._id,
-        email: user.email,
-        name: user.name,
-        phone: user.phone,
-        address: user.address,
-        role: user.role,
-        updatedAt: user.updatedAt
-      }
+      user: { id: updated.id, email: updated.email, name: updated.name, phone: updated.phone, address: updated.address, role: updated.role, updatedAt: updated.updatedAt }
     });
   } catch (error) {
     next(error);

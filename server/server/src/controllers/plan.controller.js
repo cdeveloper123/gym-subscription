@@ -1,16 +1,16 @@
-const Plan = require('../models/Plan');
+const prisma = require('../config/prisma');
 
 const getAllPlans = async (req, res, next) => {
   try {
     const { includeInactive } = req.query;
 
-    const filter = includeInactive === 'true' ? {} : { isActive: true };
+    const where = includeInactive === 'true' ? {} : { isActive: true };
 
-    const plans = await Plan.find(filter).sort({ price: 1 });
+    const plans = await prisma.plan.findMany({ where, orderBy: { price: 'asc' } });
 
     res.json({
       plans: plans.map(plan => ({
-        id: plan._id,
+        id: plan.id,
         name: plan.name,
         duration: plan.duration,
         price: plan.price,
@@ -29,23 +29,14 @@ const getPlanById = async (req, res, next) => {
   try {
     const { id } = req.params;
 
-    const plan = await Plan.findById(id);
+    const plan = await prisma.plan.findUnique({ where: { id } });
 
     if (!plan) {
       return res.status(404).json({ error: 'Plan not found' });
     }
 
     res.json({
-      plan: {
-        id: plan._id,
-        name: plan.name,
-        duration: plan.duration,
-        price: plan.price,
-        features: plan.features,
-        isActive: plan.isActive,
-        createdAt: plan.createdAt,
-        updatedAt: plan.updatedAt
-      }
+      plan: { id: plan.id, name: plan.name, duration: plan.duration, price: plan.price, features: plan.features, isActive: plan.isActive, createdAt: plan.createdAt, updatedAt: plan.updatedAt }
     });
   } catch (error) {
     next(error);
@@ -56,26 +47,19 @@ const createPlan = async (req, res, next) => {
   try {
     const { name, duration, price, features, isActive } = req.body;
 
-    const plan = await Plan.create({
-      name,
-      duration,
-      price: parseFloat(price),
-      features: features || [],
-      isActive: isActive !== undefined ? isActive : true
+    const plan = await prisma.plan.create({
+      data: {
+        name,
+        duration,
+        price: parseFloat(price),
+        features: features || [],
+        isActive: isActive !== undefined ? isActive : true
+      }
     });
 
     res.status(201).json({
       message: 'Plan created successfully',
-      plan: {
-        id: plan._id,
-        name: plan.name,
-        duration: plan.duration,
-        price: plan.price,
-        features: plan.features,
-        isActive: plan.isActive,
-        createdAt: plan.createdAt,
-        updatedAt: plan.updatedAt
-      }
+      plan: { id: plan.id, name: plan.name, duration: plan.duration, price: plan.price, features: plan.features, isActive: plan.isActive, createdAt: plan.createdAt, updatedAt: plan.updatedAt }
     });
   } catch (error) {
     next(error);
@@ -87,32 +71,24 @@ const updatePlan = async (req, res, next) => {
     const { id } = req.params;
     const { name, duration, price, features, isActive } = req.body;
 
-    const plan = await Plan.findById(id);
+    const existing = await prisma.plan.findUnique({ where: { id } });
 
-    if (!plan) {
+    if (!existing) {
       return res.status(404).json({ error: 'Plan not found' });
     }
 
-    if (name) plan.name = name;
-    if (duration) plan.duration = duration;
-    if (price) plan.price = parseFloat(price);
-    if (features) plan.features = features;
-    if (isActive !== undefined) plan.isActive = isActive;
+    const data = {};
+    if (name) data.name = name;
+    if (duration) data.duration = duration;
+    if (price) data.price = parseFloat(price);
+    if (features) data.features = features;
+    if (isActive !== undefined) data.isActive = isActive;
 
-    await plan.save();
+    const plan = await prisma.plan.update({ where: { id }, data });
 
     res.json({
       message: 'Plan updated successfully',
-      plan: {
-        id: plan._id,
-        name: plan.name,
-        duration: plan.duration,
-        price: plan.price,
-        features: plan.features,
-        isActive: plan.isActive,
-        createdAt: plan.createdAt,
-        updatedAt: plan.updatedAt
-      }
+      plan: { id: plan.id, name: plan.name, duration: plan.duration, price: plan.price, features: plan.features, isActive: plan.isActive, createdAt: plan.createdAt, updatedAt: plan.updatedAt }
     });
   } catch (error) {
     next(error);
@@ -123,14 +99,13 @@ const deletePlan = async (req, res, next) => {
   try {
     const { id } = req.params;
 
-    const plan = await Plan.findById(id);
+    const existing = await prisma.plan.findUnique({ where: { id } });
 
-    if (!plan) {
+    if (!existing) {
       return res.status(404).json({ error: 'Plan not found' });
     }
 
-    plan.isActive = false;
-    await plan.save();
+    await prisma.plan.update({ where: { id }, data: { isActive: false } });
 
     res.json({ message: 'Plan deactivated successfully' });
   } catch (error) {
@@ -138,10 +113,4 @@ const deletePlan = async (req, res, next) => {
   }
 };
 
-module.exports = {
-  getAllPlans,
-  getPlanById,
-  createPlan,
-  updatePlan,
-  deletePlan
-};
+module.exports = { getAllPlans, getPlanById, createPlan, updatePlan, deletePlan };
