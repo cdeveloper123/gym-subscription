@@ -15,8 +15,8 @@
     "subscription",
     "management"
   ],
-  "author": "",
-  "license": "ISC",
+  "author": "MP",
+  "license": "MIT",
   "devDependencies": {
     "concurrently": "^8.2.2"
   },
