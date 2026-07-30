@@ -1,61 +1,50 @@
-const { query } = require('./database');
 const bcrypt = require('bcryptjs');
-const { v4: uuidv4 } = require('crypto').randomUUID ? require('crypto') : { randomUUID: () => Math.random().toString(36).substr(2, 9) + Math.random().toString(36).substr(2, 9) };
-
-const generateId = () => {
-  try {
-    return require('crypto').randomUUID();
-  } catch {
-    return Math.random().toString(36).substr(2, 9) + Math.random().toString(36).substr(2, 9);
-  }
-};
+const User = require('../models/User');
+const Plan = require('../models/Plan');
 
 const seedDatabase = async () => {
   try {
     console.log('Starting database seeding...');
 
     // Check if data already exists
-    const existingPlans = await query('SELECT COUNT(*) as count FROM plans');
-    if (existingPlans[0].count > 0) {
+    const existingPlans = await Plan.countDocuments();
+    if (existingPlans > 0) {
       console.log('Database already seeded. Skipping...');
       return;
     }
 
     // Seed plans
-    const plans = [
+    const plans = await Plan.insertMany([
       {
-        id: generateId(),
         name: 'Basic Plan',
         duration: 'MONTHLY',
         price: 29.99,
-        features: JSON.stringify([
+        features: [
           'Access to gym equipment',
           'Locker room access',
           'Free Wi-Fi',
           'Standard hours (6 AM - 10 PM)'
-        ]),
-        is_active: true
+        ],
+        isActive: true
       },
       {
-        id: generateId(),
         name: 'Standard Plan',
         duration: 'QUARTERLY',
         price: 79.99,
-        features: JSON.stringify([
+        features: [
           'All Basic Plan features',
           'Group fitness classes',
           '1 personal training session per month',
           '24/7 gym access',
           'Towel service'
-        ]),
-        is_active: true
+        ],
+        isActive: true
       },
       {
-        id: generateId(),
         name: 'Premium Plan',
         duration: 'YEARLY',
         price: 299.99,
-        features: JSON.stringify([
+        features: [
           'All Standard Plan features',
           'Unlimited personal training',
           'Nutrition consultation',
@@ -63,28 +52,24 @@ const seedDatabase = async () => {
           'Guest passes (5 per month)',
           'Priority class booking',
           'Free parking'
-        ]),
-        is_active: true
+        ],
+        isActive: true
       }
-    ];
-
-    for (const plan of plans) {
-      await query(
-        'INSERT INTO plans (id, name, duration, price, features, is_active) VALUES (?, ?, ?, ?, ?, ?)',
-        [plan.id, plan.name, plan.duration, plan.price, plan.features, plan.is_active]
-      );
-    }
+    ]);
 
     console.log('Plans seeded successfully');
 
     // Seed sample user
     const hashedPassword = await bcrypt.hash('User123!', 10);
-    const userId = generateId();
 
-    await query(
-      'INSERT INTO users (id, email, password, name, phone, address, role) VALUES (?, ?, ?, ?, ?, ?, ?)',
-      [userId, 'user@gym.com', hashedPassword, 'Test User', '+1987654321', '456 User Avenue, City', 'USER']
-    );
+    await User.create({
+      email: 'user@gym.com',
+      password: hashedPassword,
+      name: 'Test User',
+      phone: '+1987654321',
+      address: '456 User Avenue, City',
+      role: 'USER'
+    });
 
     console.log('Sample user seeded successfully');
     console.log('Database seeding completed!');
@@ -98,4 +83,4 @@ const seedDatabase = async () => {
   }
 };
 
-module.exports = { seedDatabase };
+module.exports = seedDatabase;

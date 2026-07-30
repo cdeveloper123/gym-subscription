@@ -1,39 +1,25 @@
-const { query } = require('../config/database');
-
-const generateId = () => {
-  try {
-    return require('crypto').randomUUID();
-  } catch {
-    return Math.random().toString(36).substr(2, 9) + Math.random().toString(36).substr(2, 9);
-  }
-};
+const Plan = require('../models/Plan');
 
 const getAllPlans = async (req, res, next) => {
   try {
     const { includeInactive } = req.query;
 
-    let sql = 'SELECT * FROM plans';
+    const filter = includeInactive === 'true' ? {} : { isActive: true };
 
-    if (includeInactive !== 'true') {
-      sql += ' WHERE is_active = TRUE';
-    }
+    const plans = await Plan.find(filter).sort({ price: 1 });
 
-    sql += ' ORDER BY price ASC';
-
-    const plans = await query(sql);
-
-    const formattedPlans = plans.map(plan => ({
-      id: plan.id,
-      name: plan.name,
-      duration: plan.duration,
-      price: parseFloat(plan.price),
-      features: typeof plan.features === 'string' ? JSON.parse(plan.features) : plan.features,
-      isActive: plan.is_active,
-      createdAt: plan.created_at,
-      updatedAt: plan.updated_at
-    }));
-
-    res.json({ plans: formattedPlans });
+    res.json({
+      plans: plans.map(plan => ({
+        id: plan._id,
+        name: plan.name,
+        duration: plan.duration,
+        price: plan.price,
+        features: plan.features,
+        isActive: plan.isActive,
+        createdAt: plan.createdAt,
+        updatedAt: plan.updatedAt
+      }))
+    });
   } catch (error) {
     next(error);
   }
@@ -43,24 +29,22 @@ const getPlanById = async (req, res, next) => {
   try {
     const { id } = req.params;
 
-    const plans = await query('SELECT * FROM plans WHERE id = ?', [id]);
+    const plan = await Plan.findById(id);
 
-    if (plans.length === 0) {
+    if (!plan) {
       return res.status(404).json({ error: 'Plan not found' });
     }
 
-    const plan = plans[0];
-
     res.json({
       plan: {
-        id: plan.id,
+        id: plan._id,
         name: plan.name,
         duration: plan.duration,
-        price: parseFloat(plan.price),
-        features: typeof plan.features === 'string' ? JSON.parse(plan.features) : plan.features,
-        isActive: plan.is_active,
-        createdAt: plan.created_at,
-        updatedAt: plan.updated_at
+        price: plan.price,
+        features: plan.features,
+        isActive: plan.isActive,
+        createdAt: plan.createdAt,
+        updatedAt: plan.updatedAt
       }
     });
   } catch (error) {
@@ -72,29 +56,25 @@ const createPlan = async (req, res, next) => {
   try {
     const { name, duration, price, features, isActive } = req.body;
 
-    const planId = generateId();
-    const featuresJson = JSON.stringify(features || []);
-    const active = isActive !== undefined ? isActive : true;
-
-    await query(
-      'INSERT INTO plans (id, name, duration, price, features, is_active) VALUES (?, ?, ?, ?, ?, ?)',
-      [planId, name, duration, price, featuresJson, active]
-    );
-
-    const plans = await query('SELECT * FROM plans WHERE id = ?', [planId]);
-    const plan = plans[0];
+    const plan = await Plan.create({
+      name,
+      duration,
+      price: parseFloat(price),
+      features: features || [],
+      isActive: isActive !== undefined ? isActive : true
+    });
 
     res.status(201).json({
       message: 'Plan created successfully',
       plan: {
-        id: plan.id,
+        id: plan._id,
         name: plan.name,
         duration: plan.duration,
-        price: parseFloat(plan.price),
-        features: typeof plan.features === 'string' ? JSON.parse(plan.features) : plan.features,
-        isActive: plan.is_active,
-        createdAt: plan.created_at,
-        updatedAt: plan.updated_at
+        price: plan.price,
+        features: plan.features,
+        isActive: plan.isActive,
+        createdAt: plan.createdAt,
+        updatedAt: plan.updatedAt
       }
     });
   } catch (error) {
@@ -107,62 +87,31 @@ const updatePlan = async (req, res, next) => {
     const { id } = req.params;
     const { name, duration, price, features, isActive } = req.body;
 
-    const existingPlans = await query('SELECT * FROM plans WHERE id = ?', [id]);
+    const plan = await Plan.findById(id);
 
-    if (existingPlans.length === 0) {
+    if (!plan) {
       return res.status(404).json({ error: 'Plan not found' });
     }
 
-    const updates = [];
-    const values = [];
+    if (name) plan.name = name;
+    if (duration) plan.duration = duration;
+    if (price) plan.price = parseFloat(price);
+    if (features) plan.features = features;
+    if (isActive !== undefined) plan.isActive = isActive;
 
-    if (name) {
-      updates.push('name = ?');
-      values.push(name);
-    }
-
-    if (duration) {
-      updates.push('duration = ?');
-      values.push(duration);
-    }
-
-    if (price) {
-      updates.push('price = ?');
-      values.push(price);
-    }
-
-    if (features) {
-      updates.push('features = ?');
-      values.push(JSON.stringify(features));
-    }
-
-    if (isActive !== undefined) {
-      updates.push('is_active = ?');
-      values.push(isActive);
-    }
-
-    if (updates.length > 0) {
-      values.push(id);
-      await query(
-        `UPDATE plans SET ${updates.join(', ')}, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
-        values
-      );
-    }
-
-    const updatedPlans = await query('SELECT * FROM plans WHERE id = ?', [id]);
-    const plan = updatedPlans[0];
+    await plan.save();
 
     res.json({
       message: 'Plan updated successfully',
       plan: {
-        id: plan.id,
+        id: plan._id,
         name: plan.name,
         duration: plan.duration,
-        price: parseFloat(plan.price),
-        features: typeof plan.features === 'string' ? JSON.parse(plan.features) : plan.features,
-        isActive: plan.is_active,
-        createdAt: plan.created_at,
-        updatedAt: plan.updated_at
+        price: plan.price,
+        features: plan.features,
+        isActive: plan.isActive,
+        createdAt: plan.createdAt,
+        updatedAt: plan.updatedAt
       }
     });
   } catch (error) {
@@ -174,13 +123,14 @@ const deletePlan = async (req, res, next) => {
   try {
     const { id } = req.params;
 
-    const plans = await query('SELECT * FROM plans WHERE id = ?', [id]);
+    const plan = await Plan.findById(id);
 
-    if (plans.length === 0) {
+    if (!plan) {
       return res.status(404).json({ error: 'Plan not found' });
     }
 
-    await query('UPDATE plans SET is_active = FALSE, updated_at = CURRENT_TIMESTAMP WHERE id = ?', [id]);
+    plan.isActive = false;
+    await plan.save();
 
     res.json({ message: 'Plan deactivated successfully' });
   } catch (error) {
