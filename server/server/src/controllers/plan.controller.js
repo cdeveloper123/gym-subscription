@@ -1,32 +1,23 @@
-const supabase = require('../config/supabase');
+const Plan = require('../models/Plan');
 
 const getAllPlans = async (req, res, next) => {
   try {
     const { includeInactive } = req.query;
 
-    let query = supabase
-      .from('plans')
-      .select('*')
-      .order('price', { ascending: true });
+    const filter = includeInactive === 'true' ? {} : { isActive: true };
 
-    if (includeInactive !== 'true') {
-      query = query.eq('is_active', true);
-    }
-
-    const { data: plans, error } = await query;
-
-    if (error) throw error;
+    const plans = await Plan.find(filter).sort({ price: 1 });
 
     res.json({
       plans: plans.map(plan => ({
-        id: plan.id,
+        id: plan._id,
         name: plan.name,
         duration: plan.duration,
-        price: parseFloat(plan.price),
+        price: plan.price,
         features: plan.features,
-        isActive: plan.is_active,
-        createdAt: plan.created_at,
-        updatedAt: plan.updated_at
+        isActive: plan.isActive,
+        createdAt: plan.createdAt,
+        updatedAt: plan.updatedAt
       }))
     });
   } catch (error) {
@@ -38,26 +29,22 @@ const getPlanById = async (req, res, next) => {
   try {
     const { id } = req.params;
 
-    const { data: plan, error } = await supabase
-      .from('plans')
-      .select('*')
-      .eq('id', id)
-      .single();
+    const plan = await Plan.findById(id);
 
-    if (error || !plan) {
+    if (!plan) {
       return res.status(404).json({ error: 'Plan not found' });
     }
 
     res.json({
       plan: {
-        id: plan.id,
+        id: plan._id,
         name: plan.name,
         duration: plan.duration,
-        price: parseFloat(plan.price),
+        price: plan.price,
         features: plan.features,
-        isActive: plan.is_active,
-        createdAt: plan.created_at,
-        updatedAt: plan.updated_at
+        isActive: plan.isActive,
+        createdAt: plan.createdAt,
+        updatedAt: plan.updatedAt
       }
     });
   } catch (error) {
@@ -69,31 +56,25 @@ const createPlan = async (req, res, next) => {
   try {
     const { name, duration, price, features, isActive } = req.body;
 
-    const { data: plan, error } = await supabase
-      .from('plans')
-      .insert([{
-        name,
-        duration,
-        price: parseFloat(price),
-        features: features || [],
-        is_active: isActive !== undefined ? isActive : true
-      }])
-      .select()
-      .single();
-
-    if (error) throw error;
+    const plan = await Plan.create({
+      name,
+      duration,
+      price: parseFloat(price),
+      features: features || [],
+      isActive: isActive !== undefined ? isActive : true
+    });
 
     res.status(201).json({
       message: 'Plan created successfully',
       plan: {
-        id: plan.id,
+        id: plan._id,
         name: plan.name,
         duration: plan.duration,
-        price: parseFloat(plan.price),
+        price: plan.price,
         features: plan.features,
-        isActive: plan.is_active,
-        createdAt: plan.created_at,
-        updatedAt: plan.updated_at
+        isActive: plan.isActive,
+        createdAt: plan.createdAt,
+        updatedAt: plan.updatedAt
       }
     });
   } catch (error) {
@@ -106,43 +87,31 @@ const updatePlan = async (req, res, next) => {
     const { id } = req.params;
     const { name, duration, price, features, isActive } = req.body;
 
-    const { data: existingPlan, error: checkError } = await supabase
-      .from('plans')
-      .select('id')
-      .eq('id', id)
-      .single();
+    const plan = await Plan.findById(id);
 
-    if (checkError || !existingPlan) {
+    if (!plan) {
       return res.status(404).json({ error: 'Plan not found' });
     }
 
-    const updates = {};
-    if (name) updates.name = name;
-    if (duration) updates.duration = duration;
-    if (price) updates.price = parseFloat(price);
-    if (features) updates.features = features;
-    if (isActive !== undefined) updates.is_active = isActive;
+    if (name) plan.name = name;
+    if (duration) plan.duration = duration;
+    if (price) plan.price = parseFloat(price);
+    if (features) plan.features = features;
+    if (isActive !== undefined) plan.isActive = isActive;
 
-    const { data: plan, error } = await supabase
-      .from('plans')
-      .update(updates)
-      .eq('id', id)
-      .select()
-      .single();
-
-    if (error) throw error;
+    await plan.save();
 
     res.json({
       message: 'Plan updated successfully',
       plan: {
-        id: plan.id,
+        id: plan._id,
         name: plan.name,
         duration: plan.duration,
-        price: parseFloat(plan.price),
+        price: plan.price,
         features: plan.features,
-        isActive: plan.is_active,
-        createdAt: plan.created_at,
-        updatedAt: plan.updated_at
+        isActive: plan.isActive,
+        createdAt: plan.createdAt,
+        updatedAt: plan.updatedAt
       }
     });
   } catch (error) {
@@ -154,22 +123,14 @@ const deletePlan = async (req, res, next) => {
   try {
     const { id } = req.params;
 
-    const { data: existingPlan, error: checkError } = await supabase
-      .from('plans')
-      .select('id')
-      .eq('id', id)
-      .single();
+    const plan = await Plan.findById(id);
 
-    if (checkError || !existingPlan) {
+    if (!plan) {
       return res.status(404).json({ error: 'Plan not found' });
     }
 
-    const { error } = await supabase
-      .from('plans')
-      .update({ is_active: false })
-      .eq('id', id);
-
-    if (error) throw error;
+    plan.isActive = false;
+    await plan.save();
 
     res.json({ message: 'Plan deactivated successfully' });
   } catch (error) {
