@@ -1,50 +1,64 @@
 const bcrypt = require('bcryptjs');
-const User = require('../models/User');
-const Subscription = require('../models/Subscription');
-const Payment = require('../models/Payment');
+const supabase = require('../config/supabase');
 
 const getProfile = async (req, res, next) => {
   try {
-    const user = await User.findById(req.user.id).select('-password');
+    const { data: user, error } = await supabase
+      .from('users')
+      .select('id, email, name, phone, address, role, created_at')
+      .eq('id', req.user.id)
+      .single();
 
-    if (!user) {
+    if (error || !user) {
       return res.status(404).json({ error: 'User not found' });
     }
 
-    const subscriptions = await Subscription.find({ userId: user._id })
-      .populate('planId')
-      .sort({ createdAt: -1 });
+    const { data: subscriptions, error: subError } = await supabase
+      .from('subscriptions')
+      .select(`
+        *,
+        plans (*)
+      `)
+      .eq('user_id', user.id)
+      .order('created_at', { ascending: false });
+
+    if (subError) throw subError;
 
     const subscriptionsWithPayments = await Promise.all(
       subscriptions.map(async (sub) => {
-        const payments = await Payment.find({ subscriptionId: sub._id });
+        const { data: payments, error: payError } = await supabase
+          .from('payments')
+          .select('*')
+          .eq('subscription_id', sub.id);
+
+        if (payError) throw payError;
 
         return {
-          id: sub._id,
-          userId: sub.userId,
-          planId: sub.planId._id,
+          id: sub.id,
+          userId: sub.user_id,
+          planId: sub.plan_id,
           status: sub.status,
-          startDate: sub.startDate,
-          endDate: sub.endDate,
-          stripeSubscriptionId: sub.stripeSubscriptionId,
-          createdAt: sub.createdAt,
+          startDate: sub.start_date,
+          endDate: sub.end_date,
+          stripeSubscriptionId: sub.stripe_subscription_id,
+          createdAt: sub.created_at,
           plan: {
-            id: sub.planId._id,
-            name: sub.planId.name,
-            duration: sub.planId.duration,
-            price: sub.planId.price,
-            features: sub.planId.features
+            id: sub.plans.id,
+            name: sub.plans.name,
+            duration: sub.plans.duration,
+            price: parseFloat(sub.plans.price),
+            features: sub.plans.features
           },
           payments: payments.map(p => ({
-            id: p._id,
-            userId: p.userId,
-            subscriptionId: p.subscriptionId,
-            amount: p.amount,
+            id: p.id,
+            userId: p.user_id,
+            subscriptionId: p.subscription_id,
+            amount: parseFloat(p.amount),
             currency: p.currency,
             status: p.status,
-            stripePaymentIntentId: p.stripePaymentIntentId,
-            paymentMethod: p.paymentMethod,
-            createdAt: p.createdAt
+            stripePaymentIntentId: p.stripe_payment_intent_id,
+            paymentMethod: p.payment_method,
+            createdAt: p.created_at
           }))
         };
       })
@@ -52,13 +66,13 @@ const getProfile = async (req, res, next) => {
 
     res.json({
       user: {
-        id: user._id,
+        id: user.id,
         email: user.email,
         name: user.name,
         phone: user.phone,
         address: user.address,
         role: user.role,
-        createdAt: user.createdAt,
+        createdAt: user.created_at,
         subscriptions: subscriptionsWithPayments
       }
     });
@@ -71,11 +85,17 @@ const updateProfile = async (req, res, next) => {
   try {
     const { name, phone, address, currentPassword, newPassword } = req.body;
 
-    const user = await User.findById(req.user.id);
+    const { data: user, error } = await supabase
+      .from('users')
+      .select('*')
+      .eq('id', req.user.id)
+      .single();
 
-    if (!user) {
+    if (error || !user) {
       return res.status(404).json({ error: 'User not found' });
     }
+
+    const updates = {};
 
     if (newPassword) {
       if (!currentPassword) {
@@ -88,25 +108,32 @@ const updateProfile = async (req, res, next) => {
         return res.status(400).json({ error: 'Current password is incorrect' });
       }
 
-      user.password = await bcrypt.hash(newPassword, 10);
+      updates.password = await bcrypt.hash(newPassword, 10);
     }
 
-    if (name) user.name = name;
-    if (phone) user.phone = phone;
-    if (address) user.address = address;
+    if (name) updates.name = name;
+    if (phone) updates.phone = phone;
+    if (address) updates.address = address;
 
-    await user.save();
+    const { data: updatedUser, error: updateError } = await supabase
+      .from('users')
+      .update(updates)
+      .eq('id', req.user.id)
+      .select('id, email, name, phone, address, role, updated_at')
+      .single();
+
+    if (updateError) throw updateError;
 
     res.json({
       message: 'Profile updated successfully',
       user: {
-        id: user._id,
-        email: user.email,
-        name: user.name,
-        phone: user.phone,
-        address: user.address,
-        role: user.role,
-        updatedAt: user.updatedAt
+        id: updatedUser.id,
+        email: updatedUser.email,
+        name: updatedUser.name,
+        phone: updatedUser.phone,
+        address: updatedUser.address,
+        role: updatedUser.role,
+        updatedAt: updatedUser.updated_at
       }
     });
   } catch (error) {
