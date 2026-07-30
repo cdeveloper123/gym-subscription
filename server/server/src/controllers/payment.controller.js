@@ -1,35 +1,42 @@
 const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
-const Payment = require('../models/Payment');
-const Plan = require('../models/Plan');
+const { query } = require('../config/database');
+
+const generateId = () => {
+  try {
+    return require('crypto').randomUUID();
+  } catch {
+    return Math.random().toString(36).substr(2, 9) + Math.random().toString(36).substr(2, 9);
+  }
+};
 
 const createPaymentIntent = async (req, res, next) => {
   try {
     const { planId } = req.body;
 
-    const plan = await Plan.findById(planId);
+    const plans = await query('SELECT * FROM plans WHERE id = ? AND is_active = TRUE', [planId]);
 
-    if (!plan || !plan.isActive) {
+    if (plans.length === 0) {
       return res.status(404).json({ error: 'Plan not found or inactive' });
     }
 
+    const plan = plans[0];
+
     const paymentIntent = await stripe.paymentIntents.create({
-      amount: Math.round(plan.price * 100),
+      amount: Math.round(parseFloat(plan.price) * 100),
       currency: 'usd',
       metadata: {
         userId: req.user.id,
-        planId: plan._id.toString(),
+        planId: plan.id,
         planName: plan.name
       }
     });
 
-    await Payment.create({
-      userId: req.user.id,
-      amount: plan.price,
-      currency: 'USD',
-      status: 'PENDING',
-      stripePaymentIntentId: paymentIntent.id,
-      paymentMethod: 'card'
-    });
+    const paymentId = generateId();
+
+    await query(
+      'INSERT INTO payments (id, user_id, subscription_id, amount, currency, status, stripe_payment_intent_id, payment_method) VALUES (?, ?, NULL, ?, ?, ?, ?, ?)',
+      [paymentId, req.user.id, plan.price, 'USD', 'PENDING', paymentIntent.id, 'card']
+    );
 
     res.json({
       clientSecret: paymentIntent.client_secret,
@@ -75,9 +82,9 @@ const handleWebhook = async (req, res) => {
 const handlePaymentSuccess = async (paymentIntent) => {
   const { id, metadata } = paymentIntent;
 
-  await Payment.updateOne(
-    { stripePaymentIntentId: id },
-    { status: 'COMPLETED' }
+  await query(
+    'UPDATE payments SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE stripe_payment_intent_id = ?',
+    ['COMPLETED', id]
   );
 
   console.log(`Payment ${id} completed for user ${metadata.userId}`);
@@ -86,9 +93,9 @@ const handlePaymentSuccess = async (paymentIntent) => {
 const handlePaymentFailed = async (paymentIntent) => {
   const { id } = paymentIntent;
 
-  await Payment.updateOne(
-    { stripePaymentIntentId: id },
-    { status: 'FAILED' }
+  await query(
+    'UPDATE payments SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE stripe_payment_intent_id = ?',
+    ['FAILED', id]
   );
 
   console.log(`Payment ${id} failed`);
@@ -96,51 +103,59 @@ const handlePaymentFailed = async (paymentIntent) => {
 
 const getPaymentHistory = async (req, res, next) => {
   try {
-    const payments = await Payment.find({ userId: req.user.id })
-      .populate({
-        path: 'subscriptionId',
-        populate: {
-          path: 'planId'
-        }
-      })
-      .sort({ createdAt: -1 });
+    const payments = await query(
+      'SELECT * FROM payments WHERE user_id = ? ORDER BY created_at DESC',
+      [req.user.id]
+    );
 
-    const paymentsResponse = payments.map(payment => {
-      let subscriptionData = null;
+    const paymentsResponse = await Promise.all(
+      payments.map(async (payment) => {
+        let subscriptionData = null;
 
-      if (payment.subscriptionId) {
-        const sub = payment.subscriptionId;
-        subscriptionData = {
-          id: sub._id,
-          userId: sub.userId,
-          planId: sub.planId._id,
-          status: sub.status,
-          startDate: sub.startDate,
-          endDate: sub.endDate,
-          createdAt: sub.createdAt,
-          plan: {
-            id: sub.planId._id,
-            name: sub.planId.name,
-            duration: sub.planId.duration,
-            price: sub.planId.price,
-            features: sub.planId.features
+        if (payment.subscription_id) {
+          const subscriptions = await query(
+            `SELECT s.*, p.name as plan_name, p.duration, p.price as plan_price, p.features
+             FROM subscriptions s
+             LEFT JOIN plans p ON s.plan_id = p.id
+             WHERE s.id = ?`,
+            [payment.subscription_id]
+          );
+
+          if (subscriptions.length > 0) {
+            const sub = subscriptions[0];
+            subscriptionData = {
+              id: sub.id,
+              userId: sub.user_id,
+              planId: sub.plan_id,
+              status: sub.status,
+              startDate: sub.start_date,
+              endDate: sub.end_date,
+              createdAt: sub.created_at,
+              plan: {
+                id: sub.plan_id,
+                name: sub.plan_name,
+                duration: sub.duration,
+                price: parseFloat(sub.plan_price),
+                features: typeof sub.features === 'string' ? JSON.parse(sub.features) : sub.features
+              }
+            };
           }
-        };
-      }
+        }
 
-      return {
-        id: payment._id,
-        userId: payment.userId,
-        subscriptionId: payment.subscriptionId?._id,
-        amount: payment.amount,
-        currency: payment.currency,
-        status: payment.status,
-        stripePaymentIntentId: payment.stripePaymentIntentId,
-        paymentMethod: payment.paymentMethod,
-        createdAt: payment.createdAt,
-        subscription: subscriptionData
-      };
-    });
+        return {
+          id: payment.id,
+          userId: payment.user_id,
+          subscriptionId: payment.subscription_id,
+          amount: parseFloat(payment.amount),
+          currency: payment.currency,
+          status: payment.status,
+          stripePaymentIntentId: payment.stripe_payment_intent_id,
+          paymentMethod: payment.payment_method,
+          createdAt: payment.created_at,
+          subscription: subscriptionData
+        };
+      })
+    );
 
     res.json({ payments: paymentsResponse });
   } catch (error) {
